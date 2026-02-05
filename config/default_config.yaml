@@ -1,0 +1,132 @@
+# WhisperFlow Configuration
+# ========================
+
+# Audio capture settings
+audio:
+  sample_rate: 16000
+  channels: 1
+  dtype: float32
+  # Voice Activity Detection
+  vad_threshold: 0.5
+  # Minimum speech duration in seconds to process
+  min_speech_duration: 0.3
+  # Silence duration to auto-stop (seconds), 0 = disabled (hold-to-talk only)
+  auto_stop_silence: 0.0
+
+# Hotkey settings
+hotkey:
+  # Hold-to-talk key combination. Options: ctrl+alt, super, ctrl+space, etc.
+  hold_key: ctrl_l+space
+  # Command mode activation (double-tap or separate key)
+  command_key: ctrl_l+shift+space
+  # Toggle whisper mode
+  whisper_mode_key: ctrl_l+alt+w
+
+# Transcription settings
+transcription:
+  # Backend: "local" or "remote"
+  backend: local
+  # Model size for local: tiny, base, small, medium, large-v3, large-v3-turbo
+  model_size: large-v3-turbo
+  # Device: "cpu", "cuda", or "auto"
+  device: auto
+  # Compute type: float32, float16, int8
+  compute_type: float16
+  # Language: auto-detect or ISO code (en, es, fr, de, zh, ja, etc.)
+  language: auto
+  # Remote GPU server URL (when backend=remote)
+  remote_url: "http://192.168.1.100:8765"
+
+# LLM settings for post-processing
+llm:
+  # Provider: "ollama", "openai", "anthropic", or "none"
+  provider: ollama
+  # Ollama settings
+  ollama:
+    url: "http://localhost:11434"
+    model: "llama3.1:8b"
+  # OpenAI settings (BYOK)
+  openai:
+    api_key: ""
+    model: "gpt-4o-mini"
+  # Anthropic settings (BYOK)
+  anthropic:
+    api_key: ""
+    model: "claude-sonnet-4-20250514"
+
+# Processing pipeline
+processing:
+  # Enable auto-editing (filler removal, punctuation, grammar)
+  auto_edit: true
+  # Enable course correction ("tomorrow, no wait, Friday" -> "Friday")
+  course_correction: true
+  # Enable context-aware formatting
+  context_aware: true
+  # Enable tone matching per application
+  tone_matching: true
+
+# Context awareness
+context:
+  # Enable active window detection
+  detect_active_window: true
+  # App-specific tone overrides (app_class: tone)
+  app_tones:
+    thunderbird: professional
+    evolution: professional
+    gmail: professional
+    slack: casual
+    discord: casual
+    telegram: casual
+    signal: casual
+    whatsapp: casual
+    code: technical
+    cursor: technical
+    terminal: technical
+    libreoffice: formal
+    google-docs: formal
+
+# Personal dictionary
+dictionary:
+  # Path to custom dictionary file
+  path: "~/.config/whisperflow/dictionary.json"
+  # Auto-learn from corrections
+  auto_learn: true
+
+# Snippets / Voice shortcuts
+snippets:
+  path: "~/.config/whisperflow/snippets.json"
+
+# Style learning
+style:
+  # Enable style learning from corrections
+  enabled: true
+  # Path to stored style examples
+  path: "~/.config/whisperflow/style_examples.json"
+  # Maximum stored examples
+  max_examples: 200
+
+# History
+history:
+  # Enable transcription history
+  enabled: true
+  path: "~/.config/whisperflow/history.db"
+  # Maximum entries to keep
+  max_entries: 5000
+
+# UI settings
+ui:
+  # Show system tray icon
+  tray_icon: true
+  # Show recording overlay indicator
+  show_overlay: true
+  # Overlay position: top-right, top-left, bottom-right, bottom-left, center
+  overlay_position: top-right
+  # Theme: system, light, dark
+  theme: system
+
+# Text injection method
+injection:
+  # Method: "xdotool", "xclip", "wl-copy" (Wayland)
+  method: xdotool
+  # Delay before injection (ms)
+  delay_ms: 50

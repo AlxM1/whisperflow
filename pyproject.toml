@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "whisperflow"
+version = "0.1.0"
+description = "Local AI-powered voice dictation with auto-editing, context awareness, and command mode"
+requires-python = ">=3.11"
+dependencies = [
+    "faster-whisper>=1.0.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "PyQt6>=6.6.0",
+    "pynput>=1.7.6",
+    "requests>=2.31.0",
+    "pyyaml>=6.0",
+    "silero-vad>=5.1",
+    "torch>=2.1.0",
+    "openai>=1.12.0",
+    "anthropic>=0.18.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+]
+
+[project.optional-dependencies]
+gpu-server = [
+    "faster-whisper>=1.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "python-multipart>=0.0.6",
+]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.2.0",
+]
+
+[project.scripts]
+whisperflow = "whisperflow.main:main"
+whisperflow-server = "whisperflow.server.gpu_server:main"
+
+[tool.setuptools.packages.find]
+include = ["whisperflow*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
