@@ -6,7 +6,6 @@ from pathlib import Path
 
 from ..config import load_json_file, save_json_file
 from ..llm.base import LLMProvider
-from .prompts import STYLE_LEARNING_PROMPT
 
 logger = logging.getLogger(__name__)
 

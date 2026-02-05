@@ -60,27 +60,35 @@ class PersonalDictionary:
     def check_and_learn(self, original: str, corrected: str) -> list[str]:
         """Compare original transcription with corrected text to learn new words.
 
+        Detects both new words and capitalization corrections.
         Returns list of newly learned words.
         """
-        orig_words = set(original.lower().split())
-        corr_words = set(corrected.lower().split())
-
-        # Words in corrected but not original might be corrections
-        new_words = corr_words - orig_words
+        orig_tokens = original.split()
+        corr_tokens = corrected.split()
         learned = []
 
-        for word in new_words:
-            # Only learn words that look like proper nouns or technical terms
-            # (capitalized in original corrected text, or contain special chars)
-            for cword in corrected.split():
-                if cword.lower() == word:
-                    if (
-                        cword[0].isupper()  # Proper noun
-                        or any(c in cword for c in '-_.')  # Technical term
-                        or any(c.isupper() for c in cword[1:])  # camelCase
-                    ) and word not in self._words:
-                        self.add_word(cword, "auto-learned")
-                        learned.append(cword)
-                    break
+        # Build map of lowered original words -> their forms
+        orig_forms = {}
+        for token in orig_tokens:
+            orig_forms[token.lower()] = token
+
+        for cword in corr_tokens:
+            low = cword.lower()
+            if low in self._words or cword in self._words:
+                continue
+
+            is_new_word = low not in orig_forms
+            is_capitalization_change = (
+                not is_new_word and orig_forms.get(low, "") != cword
+            )
+
+            if is_new_word or is_capitalization_change:
+                if (
+                    cword[0].isupper()  # Proper noun
+                    or any(c in cword for c in '-_.')  # Technical term
+                    or any(c.isupper() for c in cword[1:])  # camelCase
+                ):
+                    self.add_word(cword, "auto-learned")
+                    learned.append(cword)
 
         return learned
