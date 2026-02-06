@@ -1386,8 +1386,173 @@ class TestWebServer:
                 assert data["mode"] == "question"
                 assert data["text"] == "Python is a programming language"
 
+    def test_stats_tab_in_index(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/")
+        assert "Stats" in resp.text
+        assert "stats-panel" in resp.text
+        assert "backup-btn" in resp.text
+
+    def test_history_export_empty(self):
+        """History export returns empty when no entries."""
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+
+        with patch("whisperflow.config.load_config") as mock_lc, \
+             patch("whisperflow.llm.factory.create_llm_provider"), \
+             patch("whisperflow.features.dictionary.PersonalDictionary"), \
+             patch("whisperflow.features.snippets.SnippetManager"), \
+             patch("whisperflow.features.style_learning.StyleLearner"), \
+             patch("whisperflow.features.history.TranscriptionHistory") as mock_hist_cls, \
+             patch("whisperflow.processing.pipeline.ProcessingPipeline"), \
+             patch("whisperflow.transcription.local_whisper.LocalWhisperBackend"):
+            mock_lc.return_value = {
+                "transcription": {"backend": "local", "model_size": "tiny",
+                                  "device": "cpu", "compute_type": "float32"},
+                "llm": {"provider": "none"},
+                "dictionary": {"path": "/tmp/d.json", "auto_learn": False},
+                "snippets": {"path": "/tmp/s.json"},
+                "style": {"path": "/tmp/st.json", "max_examples": 10},
+                "history": {"path": "/tmp/h.db", "max_entries": 100, "enabled": False},
+            }
+            mock_hist = MagicMock()
+            mock_hist.export_json.return_value = "[]"
+            mock_hist.export_csv.return_value = "id,timestamp\n"
+            mock_hist_cls.return_value = mock_hist
+
+            resp = client.get("/api/history/export?format=json")
+            assert resp.status_code == 200
+            assert resp.headers["content-type"] == "application/json"
+
+            resp = client.get("/api/history/export?format=csv")
+            assert resp.status_code == 200
+            assert "text/csv" in resp.headers["content-type"]
+
+    def test_stats_endpoint(self):
+        """Stats endpoint returns expected fields."""
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+
+        with patch("whisperflow.config.load_config") as mock_lc, \
+             patch("whisperflow.llm.factory.create_llm_provider"), \
+             patch("whisperflow.features.dictionary.PersonalDictionary") as mock_dict_cls, \
+             patch("whisperflow.features.snippets.SnippetManager") as mock_snip_cls, \
+             patch("whisperflow.features.style_learning.StyleLearner"), \
+             patch("whisperflow.features.history.TranscriptionHistory") as mock_hist_cls, \
+             patch("whisperflow.processing.pipeline.ProcessingPipeline"), \
+             patch("whisperflow.transcription.local_whisper.LocalWhisperBackend"):
+            mock_lc.return_value = {
+                "transcription": {"backend": "local", "model_size": "tiny",
+                                  "device": "cpu", "compute_type": "float32"},
+                "llm": {"provider": "none"},
+                "dictionary": {"path": "/tmp/d.json", "auto_learn": False},
+                "snippets": {"path": "/tmp/s.json"},
+                "style": {"path": "/tmp/st.json", "max_examples": 10},
+                "history": {"path": "/tmp/h.db", "max_entries": 100, "enabled": False},
+            }
+            mock_hist = MagicMock()
+            mock_hist.get_stats.return_value = {
+                "total_transcriptions": 42, "total_duration_seconds": 120.5,
+                "total_words": 1000, "modes": {"dictation": 30, "command": 12},
+                "languages": {"en": 35, "es": 7},
+                "last_7_days": {"transcriptions": 10, "duration_seconds": 50.0},
+            }
+            mock_hist_cls.return_value = mock_hist
+            mock_dict_cls.return_value.get_words.return_value = {"test": "general"}
+            mock_snip_cls.return_value.get_snippets.return_value = {"hi": "hello"}
+
+            resp = client.get("/api/stats")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["total_transcriptions"] == 42
+            assert data["dictionary_words"] == 1
+            assert data["snippets_count"] == 1
+
+    def test_rate_limit_middleware(self):
+        """Rate limiter returns 429 after exceeding limit."""
+        from whisperflow.server.web_server import _rate_buckets, _check_rate_limit
+        _rate_buckets.clear()
+        # Simulate many requests
+        for _ in range(60):
+            assert not _check_rate_limit("test-ip")
+        # Next one should be limited
+        assert _check_rate_limit("test-ip")
+        _rate_buckets.clear()
+
     def test_import_web_server(self):
         import whisperflow.server.web_server
+
+
+class TestHistoryAudioPath:
+    def test_history_entry_has_audio_path(self):
+        from whisperflow.features.history import HistoryEntry
+        entry = HistoryEntry(
+            id=1, timestamp=0, raw_text="test", processed_text="test",
+            app_context="", mode="dictation", language="en", duration=1.0,
+            audio_path="/tmp/test.wav",
+        )
+        assert entry.audio_path == "/tmp/test.wav"
+
+    def test_history_stats(self):
+        import tempfile
+        from whisperflow.features.history import TranscriptionHistory
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            path = f.name
+        try:
+            h = TranscriptionHistory(path, max_entries=100)
+            h.add("hello world", "Hello world.", mode="dictation", language="en", duration=2.0)
+            h.add("command test", "command result", mode="command", language="en", duration=1.5)
+            stats = h.get_stats()
+            assert stats["total_transcriptions"] == 2
+            assert stats["total_duration_seconds"] == 3.5
+            assert stats["total_words"] == 4
+            assert stats["modes"]["dictation"] == 1
+            assert stats["modes"]["command"] == 1
+        finally:
+            import os
+            os.unlink(path)
+
+    def test_history_export_csv(self):
+        import tempfile
+        from whisperflow.features.history import TranscriptionHistory
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            path = f.name
+        try:
+            h = TranscriptionHistory(path, max_entries=100)
+            h.add("hello", "Hello.", mode="dictation", language="en", duration=1.0)
+            csv_data = h.export_csv()
+            assert "hello" in csv_data
+            assert "Hello." in csv_data
+            assert csv_data.startswith("id,timestamp,raw_text")
+        finally:
+            import os
+            os.unlink(path)
+
+    def test_history_export_json(self):
+        import tempfile
+        import json as _json
+        from whisperflow.features.history import TranscriptionHistory
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            path = f.name
+        try:
+            h = TranscriptionHistory(path, max_entries=100)
+            h.add("hello", "Hello.", mode="dictation", language="en", duration=1.0)
+            json_data = h.export_json()
+            entries = _json.loads(json_data)
+            assert len(entries) == 1
+            assert entries[0]["raw_text"] == "hello"
+        finally:
+            import os
+            os.unlink(path)
 
 
 def _make_wav_bytes(duration_s: float = 0.5, sample_rate: int = 16000) -> bytes:

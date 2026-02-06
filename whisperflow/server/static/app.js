@@ -2,7 +2,8 @@
  * WhisperFlow PWA - Mobile voice dictation client
  * Features: dictation, raw transcription, command mode, history search,
  * snippets/dictionary management, waveform, swipe nav, tap/hold record,
- * dark/light theme, toast notifications, haptic feedback.
+ * dark/light theme, toast notifications, haptic feedback, keyboard shortcuts,
+ * notification sounds, usage stats, backup/restore, dictionary import, history export.
  */
 
 (function () {
@@ -27,7 +28,7 @@
     searchDebounce: null,
   };
 
-  const TABS = ["dictation", "transcribe", "command", "history", "snippets", "dictionary"];
+  const TABS = ["dictation", "transcribe", "command", "history", "snippets", "dictionary", "stats"];
 
   // -- DOM refs --
   const $ = (sel) => document.querySelector(sel);
@@ -140,6 +141,7 @@
     if (mode === "history") loadHistory();
     if (mode === "snippets") loadSnippets();
     if (mode === "dictionary") loadDictionary();
+    if (mode === "stats") loadStats();
   }
 
   // ================================================================
@@ -361,6 +363,11 @@
 
       showDictationResult(data.text, data.raw_text);
       setRecordState("dictation", "done");
+      playNotificationSound();
+      // Language memory: remember last detected language
+      if (data.language && data.language !== state.language) {
+        localStorage.setItem("wf_last_lang", data.language);
+      }
 
       const info = [];
       if (data.language) info.push(data.language.toUpperCase());
@@ -425,6 +432,8 @@
       if (navigator.share) $("#transcribe-share-btn").classList.remove("hidden");
 
       setRecordState("transcribe", "done");
+      playNotificationSound();
+      if (data.language) localStorage.setItem("wf_last_lang", data.language);
 
       const info = [];
       if (data.language) info.push(data.language.toUpperCase());
@@ -470,6 +479,7 @@
       resultEl.classList.remove("hidden");
       $("#command-copy-btn").classList.remove("hidden");
       setRecordState("command", "done");
+      playNotificationSound();
       $("#command-status-text").textContent = `Mode: ${data.mode}`;
     } catch (err) {
       console.error("Command error:", err);
@@ -545,6 +555,7 @@
               <span>${e.app_context || ""}</span>
               <span>${e.duration ? e.duration.toFixed(1) + "s" : ""}</span>
             </div>
+            ${e.audio_path ? `<div class="history-audio"><audio controls preload="none" src="${state.serverUrl}/api/history/${e.id}/audio"></audio></div>` : ""}
           </div>`)
         .join("");
     } catch (err) {
@@ -720,6 +731,204 @@
   }
 
   // ================================================================
+  // NOTIFICATION SOUND
+  // ================================================================
+  function playNotificationSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 880;
+      osc.type = "sine";
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.3);
+      setTimeout(() => ctx.close(), 500);
+    } catch (_) {}
+  }
+
+  // ================================================================
+  // STATS DASHBOARD
+  // ================================================================
+  async function loadStats() {
+    const container = $("#stats-content");
+    try {
+      const resp = await apiFetch("/api/stats");
+      if (!resp.ok) throw new Error("Failed to load stats");
+      const s = resp.ok ? await resp.json() : {};
+
+      const mins = Math.round(s.total_duration_seconds / 60);
+      const recentMins = Math.round((s.last_7_days?.duration_seconds || 0) / 60);
+
+      let modesHtml = Object.entries(s.modes || {}).map(([m, c]) =>
+        `<div class="stat-breakdown-item"><span class="label">${escapeHtml(m)}</span><span class="value">${c}</span></div>`
+      ).join("");
+
+      let langsHtml = Object.entries(s.languages || {}).map(([l, c]) =>
+        `<div class="stat-breakdown-item"><span class="label">${l.toUpperCase()}</span><span class="value">${c}</span></div>`
+      ).join("");
+
+      container.innerHTML = `
+        <div class="stat-card">
+          <div class="stat-value">${s.total_transcriptions || 0}</div>
+          <div class="stat-label">Total Transcriptions</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${mins}</div>
+          <div class="stat-label">Minutes Transcribed</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${(s.total_words || 0).toLocaleString()}</div>
+          <div class="stat-label">Total Words</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${s.last_7_days?.transcriptions || 0}</div>
+          <div class="stat-label">Last 7 Days</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${s.dictionary_words || 0}</div>
+          <div class="stat-label">Dictionary Words</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${s.snippets_count || 0}</div>
+          <div class="stat-label">Snippets</div>
+        </div>
+        ${modesHtml ? `<div class="stat-card wide"><div class="stat-label" style="margin-bottom:8px;">BY MODE</div><div class="stat-breakdown">${modesHtml}</div></div>` : ""}
+        ${langsHtml ? `<div class="stat-card wide"><div class="stat-label" style="margin-bottom:8px;">TOP LANGUAGES</div><div class="stat-breakdown">${langsHtml}</div></div>` : ""}
+      `;
+    } catch (err) {
+      container.innerHTML = '<div class="placeholder">Failed to load stats</div>';
+    }
+  }
+
+  // ================================================================
+  // HISTORY EXPORT
+  // ================================================================
+  async function exportHistory() {
+    try {
+      const resp = await apiFetch("/api/history/export?format=json");
+      if (!resp.ok) throw new Error("Export failed");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "whisperflow_history.json";
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast("History exported", "success");
+    } catch (err) {
+      showToast("Failed to export history", "error");
+    }
+  }
+
+  // ================================================================
+  // DICTIONARY IMPORT
+  // ================================================================
+  async function importDictionary(file) {
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const resp = await apiFetch("/api/dictionary/import", { method: "POST", body: formData });
+      if (!resp.ok) throw new Error("Import failed");
+      const data = await resp.json();
+      showToast(`Imported ${data.imported} words`, "success");
+      loadDictionary();
+    } catch (err) {
+      showToast("Failed to import dictionary", "error");
+    }
+  }
+
+  // ================================================================
+  // BACKUP & RESTORE
+  // ================================================================
+  async function downloadBackup() {
+    try {
+      const resp = await apiFetch("/api/backup");
+      if (!resp.ok) throw new Error("Backup failed");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "whisperflow_backup.zip";
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast("Backup downloaded", "success");
+    } catch (err) {
+      showToast("Failed to create backup", "error");
+    }
+  }
+
+  async function restoreBackup(file) {
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const resp = await apiFetch("/api/restore", { method: "POST", body: formData });
+      if (!resp.ok) throw new Error("Restore failed");
+      const data = await resp.json();
+      showToast(`Restored: ${data.restored.join(", ")}`, "success");
+      loadStats();
+    } catch (err) {
+      showToast("Failed to restore backup", "error");
+    }
+  }
+
+  // ================================================================
+  // KEYBOARD SHORTCUTS
+  // ================================================================
+  function setupKeyboardShortcuts() {
+    let spaceRecording = false;
+
+    document.addEventListener("keydown", (e) => {
+      // Ignore when typing in inputs
+      if (e.target.closest("input, textarea, select")) return;
+
+      if (e.code === "Space" && !e.repeat) {
+        e.preventDefault();
+        if (state.processing) return;
+        const mode = state.currentTab;
+        if (!["dictation", "transcribe", "command"].includes(mode)) return;
+
+        if (state.recMode === "tap") {
+          // Tap mode: toggle recording
+          const btnMap = { dictation: "#record-btn", transcribe: "#transcribe-record-btn", command: "#command-record-btn" };
+          const btn = $(btnMap[mode]);
+          if (btn) btn.click();
+        } else {
+          // Hold mode: start on keydown
+          if (!spaceRecording) {
+            spaceRecording = true;
+            startRecording();
+            setRecordState(mode, "recording");
+          }
+        }
+      }
+    });
+
+    document.addEventListener("keyup", (e) => {
+      if (e.target.closest("input, textarea, select")) return;
+
+      if (e.code === "Space" && spaceRecording) {
+        e.preventDefault();
+        spaceRecording = false;
+        const mode = state.currentTab;
+        if (!["dictation", "transcribe", "command"].includes(mode)) return;
+        if (!state.recording) return;
+
+        const callbacks = { dictation: processDictation, transcribe: processTranscribe, command: processCommand };
+        (async () => {
+          state.processing = true;
+          const blob = await stopRecording();
+          await callbacks[mode](blob);
+          state.processing = false;
+        })();
+      }
+    });
+  }
+
+  // ================================================================
   // RECORD BUTTON HELPERS (hold + tap modes)
   // ================================================================
   function setupRecordButton(btnSel, mode, processCallback) {
@@ -887,13 +1096,37 @@
       $("#settings-modal").classList.add("hidden");
     });
 
+    // History export
+    $("#export-history-btn").addEventListener("click", exportHistory);
+
+    // Dictionary import
+    $("#import-dict-btn").addEventListener("click", () => {
+      $("#dict-file-input").click();
+    });
+    $("#dict-file-input").addEventListener("change", (e) => {
+      if (e.target.files[0]) {
+        importDictionary(e.target.files[0]);
+        e.target.value = "";
+      }
+    });
+
+    // Backup & Restore
+    $("#backup-btn").addEventListener("click", downloadBackup);
+    $("#restore-file-input").addEventListener("change", (e) => {
+      if (e.target.files[0]) {
+        restoreBackup(e.target.files[0]);
+        e.target.value = "";
+      }
+    });
+
     // Prevent context menu on long press
     document.addEventListener("contextmenu", (e) => {
       if (e.target.closest(".record-btn")) e.preventDefault();
     });
 
-    // Setup swipe gestures
+    // Setup swipe gestures & keyboard shortcuts
     setupSwipe();
+    setupKeyboardShortcuts();
   }
 
   // ================================================================

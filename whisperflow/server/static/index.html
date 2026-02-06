@@ -60,6 +60,7 @@
         <button class="tab" data-mode="history">History</button>
         <button class="tab" data-mode="snippets">Snippets</button>
         <button class="tab" data-mode="dictionary">Dictionary</button>
+        <button class="tab" data-mode="stats">Stats</button>
       </div>
 
       <!-- Swipeable Panels Container -->
@@ -68,7 +69,7 @@
         <div id="dictation-panel" class="panel active" data-panel="dictation">
           <div id="result-area">
             <div id="result-placeholder" class="placeholder">
-              Hold the button and speak.<br>Release to process.
+              Hold the button and speak.<br>Release to process.<br><small>Keyboard: Space to record</small>
             </div>
             <div id="result-text" class="result-text hidden"></div>
             <div id="raw-text" class="raw-text hidden"></div>
@@ -170,8 +171,11 @@
 
         <!-- History Panel -->
         <div id="history-panel" class="panel hidden" data-panel="history">
-          <div class="search-bar">
-            <input type="search" id="history-search" placeholder="Search history..." autocomplete="off">
+          <div class="manage-header">
+            <div class="search-bar" style="flex:1;padding:0;border:none;">
+              <input type="search" id="history-search" placeholder="Search history..." autocomplete="off">
+            </div>
+            <button id="export-history-btn" class="btn btn-small btn-secondary" title="Export history">Export</button>
           </div>
           <div id="history-list" class="history-list">
             <div class="placeholder">Loading history...</div>
@@ -204,8 +208,12 @@
         <div id="dictionary-panel" class="panel hidden" data-panel="dictionary">
           <div class="manage-header">
             <h2>Personal Dictionary</h2>
-            <button id="add-word-btn" class="btn btn-small btn-primary">+ Add</button>
+            <div class="header-actions">
+              <button id="import-dict-btn" class="btn btn-small btn-secondary">Import</button>
+              <button id="add-word-btn" class="btn btn-small btn-primary">+ Add</button>
+            </div>
           </div>
+          <input type="file" id="dict-file-input" accept=".json,.txt,.csv" class="hidden">
           <div id="word-form" class="inline-form hidden">
             <input type="text" id="word-input" placeholder="Word or phrase to add">
             <div class="form-actions">
@@ -215,6 +223,23 @@
           </div>
           <div id="dictionary-list" class="manage-list">
             <div class="placeholder">Loading dictionary...</div>
+          </div>
+        </div>
+
+        <!-- Stats Panel -->
+        <div id="stats-panel" class="panel hidden" data-panel="stats">
+          <div class="manage-header">
+            <h2>Usage Stats</h2>
+            <div class="header-actions">
+              <button id="backup-btn" class="btn btn-small btn-secondary">Backup</button>
+              <label class="btn btn-small btn-secondary" style="cursor:pointer;">
+                Restore
+                <input type="file" id="restore-file-input" accept=".zip" class="hidden">
+              </label>
+            </div>
+          </div>
+          <div id="stats-content" class="stats-grid">
+            <div class="placeholder">Loading stats...</div>
           </div>
         </div>
       </div>

@@ -11,7 +11,9 @@ For mobile microphone access, HTTPS is required. See docs for setup.
 """
 
 import argparse
+import collections
 import io
+import json
 import logging
 import os
 import secrets
@@ -20,6 +22,7 @@ import subprocess
 import tempfile
 import time
 import wave
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +32,26 @@ logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB
+
+# -- Simple in-memory rate limiter --
+_rate_buckets: dict[str, collections.deque] = {}
+RATE_LIMIT_WINDOW = 60  # seconds
+RATE_LIMIT_MAX = 60  # requests per window
+
+
+def _check_rate_limit(client_ip: str) -> bool:
+    """Returns True if the request should be rate-limited."""
+    now = time.time()
+    if client_ip not in _rate_buckets:
+        _rate_buckets[client_ip] = collections.deque()
+    bucket = _rate_buckets[client_ip]
+    # Remove expired entries
+    while bucket and bucket[0] < now - RATE_LIMIT_WINDOW:
+        bucket.popleft()
+    if len(bucket) >= RATE_LIMIT_MAX:
+        return True
+    bucket.append(now)
+    return False
 
 
 def _convert_to_wav(audio_bytes: bytes, content_type: str = "") -> bytes:
@@ -85,7 +108,25 @@ def create_app(api_key: str = ""):
     from fastapi.staticfiles import StaticFiles
     from fastapi.responses import FileResponse, JSONResponse
 
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request as StarletteRequest
+    from starlette.responses import JSONResponse as StarletteJSONResponse
+
     app = FastAPI(title="WhisperFlow Web", version="0.1.0")
+
+    # Rate limiting middleware
+    class RateLimitMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: StarletteRequest, call_next):
+            if request.url.path.startswith("/api/"):
+                client_ip = request.client.host if request.client else "unknown"
+                if _check_rate_limit(client_ip):
+                    return StarletteJSONResponse(
+                        {"detail": "Rate limit exceeded. Try again later."},
+                        status_code=429,
+                    )
+            return await call_next(request)
+
+    app.add_middleware(RateLimitMiddleware)
 
     # Lazy-loaded components
     _state = {
@@ -205,8 +246,16 @@ def create_app(api_key: str = ""):
             result.text, result.language, result.duration,
         )
 
-        # Save to history
+        # Save audio if configured
+        audio_file = ""
         config = _state["config"]
+        if config.get("history", {}).get("save_audio", False):
+            audio_dir = Path(config["history"]["path"]).parent / "audio"
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            audio_file = str(audio_dir / f"{int(time.time() * 1000)}.wav")
+            Path(audio_file).write_bytes(wav_bytes)
+
+        # Save to history
         if config["history"]["enabled"]:
             _state["history"].add(
                 raw_text=result.text,
@@ -215,6 +264,7 @@ def create_app(api_key: str = ""):
                 mode=pipeline_result.mode,
                 language=result.language,
                 duration=result.duration,
+                audio_path=audio_file,
             )
 
         # Auto-learn dictionary
@@ -229,6 +279,7 @@ def create_app(api_key: str = ""):
             "language": result.language,
             "duration": result.duration,
             "processing_time": round(elapsed, 2),
+            "has_audio": bool(audio_file),
         }
 
     @app.post("/api/command")
@@ -338,8 +389,16 @@ def create_app(api_key: str = ""):
         if result.is_empty:
             return {"text": "", "language": "", "duration": 0, "processing_time": 0}
 
-        # Save to history
+        # Save audio if configured
+        audio_file = ""
         config = _state["config"]
+        if config.get("history", {}).get("save_audio", False):
+            audio_dir = Path(config["history"]["path"]).parent / "audio"
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            audio_file = str(audio_dir / f"{int(time.time() * 1000)}.wav")
+            Path(audio_file).write_bytes(wav_bytes)
+
+        # Save to history
         if config["history"]["enabled"]:
             _state["history"].add(
                 raw_text=result.text,
@@ -348,6 +407,7 @@ def create_app(api_key: str = ""):
                 mode="transcribe",
                 language=result.language,
                 duration=result.duration,
+                audio_path=audio_file,
             )
 
         return {
@@ -356,6 +416,7 @@ def create_app(api_key: str = ""):
             "confidence": result.confidence,
             "duration": result.duration,
             "processing_time": round(elapsed, 2),
+            "has_audio": bool(audio_file),
         }
 
     @app.get("/api/snippets")
@@ -418,6 +479,227 @@ def create_app(api_key: str = ""):
         _init_components()
         entries = _state["history"].search(q, limit)
         return {"entries": entries}
+
+    # -- History Export --
+
+    @app.get("/api/history/export")
+    async def export_history(
+        format: str = "json",
+        authorization: str | None = Header(default=None),
+    ):
+        from fastapi.responses import Response
+        _check_auth(authorization)
+        _init_components()
+        if format == "csv":
+            data = _state["history"].export_csv()
+            return Response(content=data, media_type="text/csv",
+                            headers={"Content-Disposition": "attachment; filename=whisperflow_history.csv"})
+        else:
+            data = _state["history"].export_json()
+            return Response(content=data, media_type="application/json",
+                            headers={"Content-Disposition": "attachment; filename=whisperflow_history.json"})
+
+    # -- Bulk Dictionary Import --
+
+    @app.post("/api/dictionary/import")
+    async def import_dictionary(
+        file: UploadFile = File(...),
+        authorization: str | None = Header(default=None),
+    ):
+        _check_auth(authorization)
+        _init_components()
+        content = await file.read()
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=422, detail="File must be UTF-8 text")
+        # Support JSON ({"words": {"word": "category"}}) or plain text (one word per line)
+        imported = 0
+        if text.strip().startswith("{"):
+            data = json.loads(text)
+            words = data.get("words", data)
+            for word, cat in words.items():
+                if word.strip():
+                    _state["dictionary"].add_word(word.strip(), cat if isinstance(cat, str) else "imported")
+                    imported += 1
+        else:
+            for line in text.splitlines():
+                word = line.strip()
+                if word and not word.startswith("#"):
+                    _state["dictionary"].add_word(word, "imported")
+                    imported += 1
+        return {"ok": True, "imported": imported}
+
+    # -- Audio Storage & Playback --
+
+    @app.get("/api/history/{entry_id}/audio")
+    async def get_audio(entry_id: int, authorization: str | None = Header(default=None)):
+        _check_auth(authorization)
+        _init_components()
+        entry = _state["history"].get_entry(entry_id)
+        if not entry or not entry.audio_path:
+            raise HTTPException(status_code=404, detail="Audio not found")
+        audio_path = Path(entry.audio_path)
+        if not audio_path.exists():
+            raise HTTPException(status_code=404, detail="Audio file missing")
+        return FileResponse(audio_path, media_type="audio/wav")
+
+    # -- Usage Stats --
+
+    @app.get("/api/stats")
+    async def get_stats(authorization: str | None = Header(default=None)):
+        _check_auth(authorization)
+        _init_components()
+        stats = _state["history"].get_stats()
+        stats["dictionary_words"] = len(_state["dictionary"].get_words())
+        stats["snippets_count"] = len(_state["snippets"].get_snippets())
+        return stats
+
+    # -- Language Memory --
+
+    @app.get("/api/settings/language")
+    async def get_language_setting(authorization: str | None = Header(default=None)):
+        _check_auth(authorization)
+        _init_components()
+        # Return the last detected language from recent history
+        entries = _state["history"].get_recent(1)
+        last_lang = entries[0].language if entries else ""
+        return {"language": last_lang}
+
+    # -- Backup & Restore --
+
+    @app.get("/api/backup")
+    async def backup(authorization: str | None = Header(default=None)):
+        from fastapi.responses import Response
+        _check_auth(authorization)
+        _init_components()
+        config = _state["config"]
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Dictionary
+            dict_path = Path(config["dictionary"]["path"])
+            if dict_path.exists():
+                zf.write(dict_path, "dictionary.json")
+            # Snippets
+            snip_path = Path(config["snippets"]["path"])
+            if snip_path.exists():
+                zf.write(snip_path, "snippets.json")
+            # Style examples
+            style_path = Path(config["style"]["path"])
+            if style_path.exists():
+                zf.write(style_path, "style_examples.json")
+            # History export as JSON
+            zf.writestr("history.json", _state["history"].export_json())
+            # Config
+            from whisperflow.config import CONFIG_FILE
+            if CONFIG_FILE.exists():
+                zf.write(CONFIG_FILE, "config.yaml")
+
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": "attachment; filename=whisperflow_backup.zip"},
+        )
+
+    @app.post("/api/restore")
+    async def restore(
+        file: UploadFile = File(...),
+        authorization: str | None = Header(default=None),
+    ):
+        _check_auth(authorization)
+        _init_components()
+        config = _state["config"]
+
+        content = await file.read()
+        restored = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
+                names = zf.namelist()
+                if "dictionary.json" in names:
+                    data = json.loads(zf.read("dictionary.json"))
+                    words = data.get("words", data)
+                    for word, cat in words.items():
+                        _state["dictionary"].add_word(word, cat if isinstance(cat, str) else "general")
+                    restored.append("dictionary")
+                if "snippets.json" in names:
+                    snip_path = Path(config["snippets"]["path"])
+                    snip_path.write_bytes(zf.read("snippets.json"))
+                    _state["snippets"]._load()
+                    restored.append("snippets")
+                if "style_examples.json" in names:
+                    style_path = Path(config["style"]["path"])
+                    style_path.write_bytes(zf.read("style_examples.json"))
+                    restored.append("style_examples")
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Invalid backup file: {e}")
+
+        return {"ok": True, "restored": restored}
+
+    # -- WebSocket Streaming STT --
+
+    @app.websocket("/ws/stream")
+    async def websocket_stream(websocket):
+        from starlette.websockets import WebSocket, WebSocketDisconnect
+        await websocket.accept()
+
+        # Auth check via first message
+        if api_key:
+            try:
+                auth_msg = await websocket.receive_json()
+                token = auth_msg.get("api_key", "")
+                if not secrets.compare_digest(token, api_key):
+                    await websocket.send_json({"error": "Invalid API key"})
+                    await websocket.close()
+                    return
+            except Exception:
+                await websocket.close()
+                return
+
+        _init_components()
+        audio_chunks = []
+        language = "auto"
+
+        try:
+            while True:
+                msg = await websocket.receive()
+
+                if msg.get("type") == "websocket.receive":
+                    if "bytes" in msg and msg["bytes"]:
+                        audio_chunks.append(msg["bytes"])
+                    elif "text" in msg:
+                        data = json.loads(msg["text"])
+                        if data.get("action") == "stop":
+                            # Combine all chunks and transcribe
+                            if audio_chunks:
+                                combined = b"".join(audio_chunks)
+                                try:
+                                    wav_bytes = _convert_to_wav(combined)
+                                except RuntimeError:
+                                    await websocket.send_json({"error": "Audio conversion failed"})
+                                    audio_chunks.clear()
+                                    continue
+
+                                initial_prompt = _state["dictionary"].get_whisper_prompt()
+                                lang = language if language != "auto" else None
+                                result = _state["transcriber"].transcribe(
+                                    wav_bytes, language=lang,
+                                    initial_prompt=initial_prompt or None,
+                                )
+                                await websocket.send_json({
+                                    "text": result.text,
+                                    "language": result.language,
+                                    "confidence": result.confidence,
+                                    "duration": result.duration,
+                                    "final": True,
+                                })
+                            audio_chunks.clear()
+                        elif data.get("action") == "config":
+                            language = data.get("language", "auto")
+                        elif data.get("action") == "clear":
+                            audio_chunks.clear()
+        except Exception:
+            pass  # WebSocket disconnected
 
     # -- PWA Static Files --
 

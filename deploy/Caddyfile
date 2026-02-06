@@ -1,0 +1,54 @@
+# WhisperFlow Caddyfile - Caddy reverse proxy configuration
+#
+# Caddy provides automatic HTTPS with zero configuration.
+# Choose ONE of the options below depending on your setup.
+#
+# Installation:
+#   1. Install Caddy: https://caddyserver.com/docs/install
+#   2. Copy this file: sudo cp Caddyfile /etc/caddy/Caddyfile
+#   3. Restart Caddy: sudo systemctl restart caddy
+#
+# Make sure the whisperflow-web service is running on port 8766
+# before starting Caddy.
+
+# ---------------------------------------------------------------------------
+# Option 1: Local hostname with self-signed TLS (recommended for LAN)
+#
+# Uses Caddy's internal CA to generate a self-signed certificate.
+# Access via https://whisperflow.local from machines on your network.
+# You may need to add "whisperflow.local" to /etc/hosts on client machines
+# pointing to the server's LAN IP address.
+# ---------------------------------------------------------------------------
+
+whisperflow.local {
+	tls internal
+
+	reverse_proxy localhost:8766
+}
+
+# ---------------------------------------------------------------------------
+# Option 2: IP-based access with self-signed TLS
+#
+# Useful when you do not have DNS or a local hostname.
+# Replace 192.168.1.100 with your server's actual LAN IP.
+# Access via https://192.168.1.100 from any machine on the network.
+# ---------------------------------------------------------------------------
+
+# https://192.168.1.100 {
+# 	tls internal
+#
+# 	reverse_proxy localhost:8766
+# }
+
+# ---------------------------------------------------------------------------
+# Option 3: Public domain with automatic Let's Encrypt TLS
+#
+# If you have a public domain pointing to this server, Caddy will
+# automatically obtain and renew a certificate from Let's Encrypt.
+# Replace whisperflow.example.com with your actual domain.
+# Port 80 and 443 must be reachable from the internet.
+# ---------------------------------------------------------------------------
+
+# whisperflow.example.com {
+# 	reverse_proxy localhost:8766
+# }

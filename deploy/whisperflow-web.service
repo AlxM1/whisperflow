@@ -1,0 +1,49 @@
+# WhisperFlow Web Server - systemd unit file
+#
+# Installation:
+#   sudo cp whisperflow-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now whisperflow-web.service
+#
+# Prerequisites:
+#   sudo useradd --system --shell /usr/sbin/nologin whisperflow
+#   sudo mkdir -p /opt/whisperflow
+#   pip install whisperflow[web] into a virtualenv or system-wide
+#
+# Logs:
+#   journalctl -u whisperflow-web -f
+
+[Unit]
+Description=WhisperFlow Web Server
+Documentation=https://github.com/whisperflow/whisperflow
+After=network.target
+
+[Service]
+Type=simple
+User=whisperflow
+Group=whisperflow
+WorkingDirectory=/opt/whisperflow
+
+ExecStart=/usr/bin/env whisperflow-web --host 0.0.0.0 --port 8766
+
+# Optional environment variables — uncomment and set as needed:
+# WHISPERFLOW_API_KEY protects the web API with a bearer token
+# WHISPERFLOW_DATA_DIR overrides the default data/config directory
+Environment=WHISPERFLOW_API_KEY=
+Environment=WHISPERFLOW_DATA_DIR=
+
+# You can also load environment from a file:
+# EnvironmentFile=/etc/whisperflow/whisperflow.env
+
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/whisperflow
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

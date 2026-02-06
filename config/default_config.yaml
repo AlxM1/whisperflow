@@ -114,6 +114,8 @@ history:
   path: "~/.config/whisperflow/history.db"
   # Maximum entries to keep
   max_entries: 5000
+  # Save audio recordings alongside history (increases storage)
+  save_audio: false
 
 # UI settings
 ui:

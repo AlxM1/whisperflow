@@ -1,0 +1,71 @@
+# WhisperFlow Docker Compose configuration
+#
+# Usage:
+#   # Start the web server only:
+#   docker compose up -d whisperflow-web
+#
+#   # Start both web and GPU server:
+#   docker compose --profile gpu up -d
+#
+#   # View logs:
+#   docker compose logs -f
+#
+#   # Stop everything:
+#   docker compose down
+
+services:
+  # -------------------------------------------------------------------------
+  # Web server — the main WhisperFlow web interface and API
+  # -------------------------------------------------------------------------
+  whisperflow-web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: whisperflow-web
+    ports:
+      - "8766:8766"
+    volumes:
+      - whisperflow-data:/data
+    environment:
+      - WHISPERFLOW_API_KEY=${WHISPERFLOW_API_KEY:-}
+      - WHISPERFLOW_DATA_DIR=/data
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # GPU server — faster-whisper transcription on NVIDIA GPU
+  #
+  # This service is behind the "gpu" profile so it only starts when
+  # explicitly requested:
+  #   docker compose --profile gpu up -d
+  #
+  # Prerequisites:
+  #   - NVIDIA Container Toolkit installed on the host
+  #   - A CUDA-capable GPU available
+  # -------------------------------------------------------------------------
+  whisperflow-gpu:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: whisperflow-gpu
+    profiles:
+      - gpu
+    ports:
+      - "8765:8765"
+    volumes:
+      - whisperflow-data:/data
+    environment:
+      - WHISPERFLOW_API_KEY=${WHISPERFLOW_API_KEY:-}
+      - WHISPERFLOW_DATA_DIR=/data
+    command: ["whisperflow-server", "--host", "0.0.0.0", "--port", "8765"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  whisperflow-data:
+    driver: local

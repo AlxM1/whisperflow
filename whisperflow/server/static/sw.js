@@ -1,6 +1,6 @@
 // WhisperFlow Service Worker - enables PWA install + offline shell
 
-const CACHE_NAME = "whisperflow-v2";
+const CACHE_NAME = "whisperflow-v3";
 const SHELL_ASSETS = [
   "/",
   "/static/style.css",
