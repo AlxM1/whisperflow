@@ -411,6 +411,78 @@ class TestConfig:
             assert config["processing"]["auto_edit"] is True
             assert config["injection"]["method"] == "auto"
 
+    def test_set_data_dir_overrides_paths(self):
+        """set_data_dir should redirect all storage paths to the custom directory."""
+        import whisperflow.config as cfg_mod
+        from whisperflow.config import set_data_dir, load_config
+
+        tmpdir = Path(tempfile.mkdtemp())
+        custom_dir = tmpdir / "my_data"
+
+        # Save originals to restore after test
+        orig_config_dir = cfg_mod.CONFIG_DIR
+        orig_config_file = cfg_mod.CONFIG_FILE
+        try:
+            set_data_dir(str(custom_dir))
+            assert cfg_mod.CONFIG_DIR == custom_dir
+            assert cfg_mod.CONFIG_FILE == custom_dir / "config.yaml"
+
+            config = load_config()
+            # All data paths should point to the custom directory
+            assert config["dictionary"]["path"] == str(custom_dir / "dictionary.json")
+            assert config["snippets"]["path"] == str(custom_dir / "snippets.json")
+            assert config["style"]["path"] == str(custom_dir / "style_examples.json")
+            assert config["history"]["path"] == str(custom_dir / "history.db")
+
+            # Verify the directory was created
+            assert custom_dir.exists()
+        finally:
+            cfg_mod.CONFIG_DIR = orig_config_dir
+            cfg_mod.CONFIG_FILE = orig_config_file
+
+    def test_set_data_dir_with_tilde(self):
+        """set_data_dir should expand ~ in paths."""
+        import whisperflow.config as cfg_mod
+        from whisperflow.config import set_data_dir
+
+        orig_config_dir = cfg_mod.CONFIG_DIR
+        orig_config_file = cfg_mod.CONFIG_FILE
+        try:
+            set_data_dir("~/whisperflow_test_data")
+            assert "~" not in str(cfg_mod.CONFIG_DIR)
+            assert cfg_mod.CONFIG_DIR.is_absolute()
+        finally:
+            cfg_mod.CONFIG_DIR = orig_config_dir
+            cfg_mod.CONFIG_FILE = orig_config_file
+
+    def test_custom_path_not_rewritten(self):
+        """Paths that don't match the default prefix should just be expanded."""
+        import whisperflow.config as cfg_mod
+        from whisperflow.config import load_config
+
+        tmpdir = Path(tempfile.mkdtemp())
+        custom_dir = tmpdir / "data"
+        custom_dir.mkdir()
+
+        # Write a user config with a custom path
+        config_file = custom_dir / "config.yaml"
+        import yaml
+        config_file.write_text(yaml.dump({
+            "dictionary": {"path": "/opt/whisperflow/my_dict.json"},
+        }))
+
+        orig_config_dir = cfg_mod.CONFIG_DIR
+        orig_config_file = cfg_mod.CONFIG_FILE
+        try:
+            cfg_mod.CONFIG_DIR = custom_dir
+            cfg_mod.CONFIG_FILE = config_file
+            config = load_config()
+            # Custom absolute path should be preserved
+            assert config["dictionary"]["path"] == "/opt/whisperflow/my_dict.json"
+        finally:
+            cfg_mod.CONFIG_DIR = orig_config_dir
+            cfg_mod.CONFIG_FILE = orig_config_file
+
 
 # ============================================================================
 # Processing Pipeline (Integration)

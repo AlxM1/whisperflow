@@ -24,6 +24,21 @@ VALID_INJECTION_METHODS = {"auto", "xdotool", "xclip", "wl-copy", "wayland"}
 VALID_OVERLAY_POSITIONS = {"top-right", "top-left", "bottom-right", "bottom-left", "center"}
 
 
+def set_data_dir(data_dir: str) -> None:
+    """Override the data directory for all WhisperFlow storage.
+
+    Call this before load_config() to redirect all data files
+    (config, dictionary, snippets, style, history) to a custom location.
+
+    Args:
+        data_dir: Absolute or ~-relative path to the data directory.
+    """
+    global CONFIG_DIR, CONFIG_FILE
+    CONFIG_DIR = Path(data_dir).expanduser().resolve()
+    CONFIG_FILE = CONFIG_DIR / "config.yaml"
+    logger.info(f"Data directory set to: {CONFIG_DIR}")
+
+
 def ensure_config_dir() -> None:
     """Create config directory and default files if they don't exist."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -92,10 +107,20 @@ def load_config() -> dict[str, Any]:
         with open(CONFIG_FILE) as f:
             user_config = yaml.safe_load(f) or {}
         config = _deep_merge(config, user_config)
-    # Expand paths
+
+    # Resolve data file paths relative to CONFIG_DIR.
+    # Default config has paths like ~/.config/whisperflow/dictionary.json.
+    # If the user set a custom data dir, rewrite them to use CONFIG_DIR.
+    _default_prefix = "~/.config/whisperflow/"
     for section in ("dictionary", "snippets", "style", "history"):
         if "path" in config.get(section, {}):
-            config[section]["path"] = str(Path(config[section]["path"]).expanduser())
+            raw_path = config[section]["path"]
+            if raw_path.startswith(_default_prefix):
+                # Replace default prefix with actual CONFIG_DIR
+                filename = raw_path[len(_default_prefix):]
+                config[section]["path"] = str(CONFIG_DIR / filename)
+            else:
+                config[section]["path"] = str(Path(raw_path).expanduser())
 
     # Validate and warn
     warnings = validate_config(config)

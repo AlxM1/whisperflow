@@ -156,7 +156,16 @@ def main():
         "--api-key", default="",
         help="API key for authentication (or set WHISPERFLOW_API_KEY env var)",
     )
+    parser.add_argument(
+        "--data-dir",
+        default=os.environ.get("WHISPERFLOW_DATA_DIR", ""),
+        help="Override data directory for all storage",
+    )
     args = parser.parse_args()
+
+    if args.data_dir:
+        from whisperflow.config import set_data_dir
+        set_data_dir(args.data_dir)
 
     api_key = args.api_key or os.environ.get("WHISPERFLOW_API_KEY", "")
     if api_key:

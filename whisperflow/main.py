@@ -5,6 +5,7 @@ context awareness, command mode, and more.
 """
 
 import logging
+import os
 import signal
 import sys
 import threading
@@ -478,6 +479,20 @@ class WhisperFlowApp:
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="WhisperFlow - AI voice dictation")
+    parser.add_argument(
+        "--data-dir",
+        default=os.environ.get("WHISPERFLOW_DATA_DIR", ""),
+        help="Override data directory for all storage (config, history, dictionary, etc.). "
+             "Defaults to ~/.config/whisperflow/ or WHISPERFLOW_DATA_DIR env var.",
+    )
+    args = parser.parse_args()
+
+    if args.data_dir:
+        from .config import set_data_dir
+        set_data_dir(args.data_dir)
+
     app = WhisperFlowApp()
     app.run()
 

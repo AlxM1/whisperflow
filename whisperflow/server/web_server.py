@@ -454,7 +454,16 @@ def main():
         "--ssl-key", default="",
         help="Path to SSL private key",
     )
+    parser.add_argument(
+        "--data-dir",
+        default=os.environ.get("WHISPERFLOW_DATA_DIR", ""),
+        help="Override data directory for all storage (config, history, dictionary, etc.)",
+    )
     args = parser.parse_args()
+
+    if args.data_dir:
+        from whisperflow.config import set_data_dir
+        set_data_dir(args.data_dir)
 
     api_key = args.api_key or os.environ.get("WHISPERFLOW_API_KEY", "")
     if api_key:
