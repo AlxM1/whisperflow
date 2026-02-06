@@ -629,6 +629,31 @@ class TestTranscriptionResult:
         assert result.text == ""
         assert result.confidence == 0.0
 
+    def test_remote_whisper_sends_auth_header(self):
+        """Remote backend should send Authorization header when api_key is set."""
+        from whisperflow.transcription.remote_whisper import RemoteWhisperBackend
+        backend = RemoteWhisperBackend(server_url="http://localhost:99999", api_key="test-key")
+        assert backend.api_key == "test-key"
+
+        # Verify auth header is sent in is_available check
+        with patch("whisperflow.transcription.remote_whisper.requests.get") as mock_get:
+            mock_get.return_value = MagicMock(status_code=200)
+            backend.is_available()
+            mock_get.assert_called_once()
+            _, kwargs = mock_get.call_args
+            assert kwargs["headers"]["Authorization"] == "Bearer test-key"
+
+    def test_remote_whisper_no_auth_without_key(self):
+        """Remote backend should not send auth header when api_key is empty."""
+        from whisperflow.transcription.remote_whisper import RemoteWhisperBackend
+        backend = RemoteWhisperBackend(server_url="http://localhost:99999", api_key="")
+
+        with patch("whisperflow.transcription.remote_whisper.requests.get") as mock_get:
+            mock_get.return_value = MagicMock(status_code=200)
+            backend.is_available()
+            _, kwargs = mock_get.call_args
+            assert "Authorization" not in kwargs.get("headers", {})
+
 
 # ============================================================================
 # GPU Server API
@@ -1114,6 +1139,15 @@ class TestWebServer:
         assert (STATIC_DIR / "app.js").exists()
         assert (STATIC_DIR / "manifest.json").exists()
         assert (STATIC_DIR / "sw.js").exists()
+        assert (STATIC_DIR / "icon-192.png").exists()
+        assert (STATIC_DIR / "icon-512.png").exists()
+
+    def test_service_worker_caches_icons(self):
+        """Service worker should cache all PWA icons for offline use."""
+        from whisperflow.server.web_server import STATIC_DIR
+        sw_content = (STATIC_DIR / "sw.js").read_text()
+        assert "icon-192.png" in sw_content
+        assert "icon-512.png" in sw_content
 
     def test_index_endpoint(self):
         from whisperflow.server.web_server import create_app
@@ -1282,6 +1316,75 @@ class TestWebServer:
         assert "Snippets" in resp.text
         assert "Dictionary" in resp.text
         assert "theme-toggle" in resp.text
+
+    def test_command_requires_auth(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(api_key="cmd-secret")
+        client = TestClient(app)
+        resp = client.post("/api/command",
+                           files={"audio": ("test.wav", b"fake", "audio/wav")},
+                           data={"language": "", "selected_text": ""})
+        assert resp.status_code == 401
+
+    def test_command_endpoint_processes_audio(self):
+        """Command endpoint processes audio through mocked pipeline."""
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+        from whisperflow.transcription.base import TranscriptionResult
+
+        app = create_app()
+        client = TestClient(app)
+        wav_bytes = _make_wav_bytes(duration_s=0.5)
+
+        mock_result = TranscriptionResult(
+            text="what is Python", language="en", confidence=0.95, duration=0.5,
+        )
+
+        with patch("whisperflow.server.web_server._convert_to_wav", return_value=wav_bytes), \
+             patch("whisperflow.config.load_config") as mock_lc, \
+             patch("whisperflow.llm.factory.create_llm_provider"), \
+             patch("whisperflow.features.dictionary.PersonalDictionary") as mock_dict_cls, \
+             patch("whisperflow.features.snippets.SnippetManager"), \
+             patch("whisperflow.features.style_learning.StyleLearner"), \
+             patch("whisperflow.features.history.TranscriptionHistory"), \
+             patch("whisperflow.processing.pipeline.ProcessingPipeline"), \
+             patch("whisperflow.transcription.local_whisper.LocalWhisperBackend") as mock_whisper:
+
+            mock_lc.return_value = {
+                "transcription": {"backend": "local", "model_size": "tiny",
+                                  "device": "cpu", "compute_type": "float32"},
+                "llm": {"provider": "none"},
+                "dictionary": {"path": "/tmp/d.json", "auto_learn": False},
+                "snippets": {"path": "/tmp/s.json"},
+                "style": {"path": "/tmp/st.json", "max_examples": 10},
+                "history": {"path": "/tmp/h.db", "max_entries": 100, "enabled": False},
+            }
+            mock_whisper_inst = MagicMock()
+            mock_whisper_inst.transcribe.return_value = mock_result
+            mock_whisper.return_value = mock_whisper_inst
+
+            mock_dict_inst = MagicMock()
+            mock_dict_inst.get_whisper_prompt.return_value = ""
+            mock_dict_cls.return_value = mock_dict_inst
+
+            # Mock CommandMode to return a question answer
+            with patch("whisperflow.processing.command_mode.CommandMode") as mock_cmd:
+                mock_cmd_inst = MagicMock()
+                mock_cmd_inst.classify_intent.return_value = "question"
+                mock_cmd_inst.answer_question.return_value = "Python is a programming language"
+                mock_cmd.return_value = mock_cmd_inst
+
+                resp = client.post(
+                    "/api/command",
+                    files={"audio": ("test.wav", wav_bytes, "audio/wav")},
+                    data={"language": "", "selected_text": ""},
+                )
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["mode"] == "question"
+                assert data["text"] == "Python is a programming language"
 
     def test_import_web_server(self):
         import whisperflow.server.web_server

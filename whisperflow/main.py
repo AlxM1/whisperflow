@@ -121,7 +121,8 @@ class WhisperFlowApp:
 
         if trans_cfg["backend"] == "remote":
             from .transcription.remote_whisper import RemoteWhisperBackend
-            backend = RemoteWhisperBackend(server_url=trans_cfg["remote_url"])
+            api_key = trans_cfg.get("remote_api_key", "") or os.environ.get("WHISPERFLOW_API_KEY", "")
+            backend = RemoteWhisperBackend(server_url=trans_cfg["remote_url"], api_key=api_key)
             if backend.is_available():
                 logger.info(f"Using remote transcription: {trans_cfg['remote_url']}")
                 return backend

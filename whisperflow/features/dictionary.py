@@ -73,6 +73,8 @@ class PersonalDictionary:
             orig_forms[token.lower()] = token
 
         for cword in corr_tokens:
+            if not cword:
+                continue
             low = cword.lower()
             if low in self._words or cword in self._words:
                 continue

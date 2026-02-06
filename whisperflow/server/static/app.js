@@ -243,7 +243,12 @@
       if (!state.audioContext) {
         state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
       }
+      // Disconnect previous source to avoid leaking AudioNodes
+      if (state._waveformSource) {
+        try { state._waveformSource.disconnect(); } catch (_) {}
+      }
       const source = state.audioContext.createMediaStreamSource(state.audioStream);
+      state._waveformSource = source;
       state.analyser = state.audioContext.createAnalyser();
       state.analyser.fftSize = 256;
       source.connect(state.analyser);
@@ -290,6 +295,11 @@
     if (state.waveformAnimId) {
       cancelAnimationFrame(state.waveformAnimId);
       state.waveformAnimId = null;
+    }
+    // Disconnect audio source to release resources
+    if (state._waveformSource) {
+      try { state._waveformSource.disconnect(); } catch (_) {}
+      state._waveformSource = null;
     }
     // Hide all canvases
     $$(".waveform-canvas").forEach((c) => {
@@ -516,6 +526,7 @@
       } else {
         resp = await apiFetch("/api/history?limit=50");
       }
+      if (!resp.ok) throw new Error("Failed to load history");
       const data = await resp.json();
       const list = $("#history-list");
 
@@ -547,6 +558,7 @@
   async function loadSnippets() {
     try {
       const resp = await apiFetch("/api/snippets");
+      if (!resp.ok) throw new Error("Failed to load snippets");
       const data = await resp.json();
       const list = $("#snippets-list");
       const snippets = data.snippets || {};
@@ -606,7 +618,8 @@
 
   async function deleteSnippet(trigger) {
     try {
-      await apiFetch(`/api/snippets/${encodeURIComponent(trigger)}`, { method: "DELETE" });
+      const resp = await apiFetch(`/api/snippets/${encodeURIComponent(trigger)}`, { method: "DELETE" });
+      if (!resp.ok) throw new Error("Failed to delete");
       showToast("Snippet deleted", "success");
       loadSnippets();
     } catch (err) {
@@ -620,6 +633,7 @@
   async function loadDictionary() {
     try {
       const resp = await apiFetch("/api/dictionary");
+      if (!resp.ok) throw new Error("Failed to load dictionary");
       const data = await resp.json();
       const list = $("#dictionary-list");
       const words = data.words || {};
@@ -668,7 +682,8 @@
 
   async function deleteWord(word) {
     try {
-      await apiFetch(`/api/dictionary/${encodeURIComponent(word)}`, { method: "DELETE" });
+      const resp = await apiFetch(`/api/dictionary/${encodeURIComponent(word)}`, { method: "DELETE" });
+      if (!resp.ok) throw new Error("Failed to delete");
       showToast(`"${word}" removed`, "success");
       loadDictionary();
     } catch (err) {

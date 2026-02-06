@@ -14,9 +14,11 @@ logger = logging.getLogger(__name__)
 class RemoteWhisperBackend(TranscriptionBackend):
     """Transcription via remote GPU server (e.g., RTX 5090 on Windows PC)."""
 
-    def __init__(self, server_url: str = "http://192.168.1.100:8765", timeout: int = 60):
+    def __init__(self, server_url: str = "http://192.168.1.100:8765", timeout: int = 60,
+                 api_key: str = ""):
         self.server_url = server_url.rstrip("/")
         self.timeout = timeout
+        self.api_key = api_key
 
     def transcribe(
         self,
@@ -33,10 +35,15 @@ class RemoteWhisperBackend(TranscriptionBackend):
         if initial_prompt:
             data["initial_prompt"] = initial_prompt
 
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
         start = time.time()
 
         def _do_request():
-            resp = requests.post(url, files=files, data=data, timeout=self.timeout)
+            resp = requests.post(url, files=files, data=data, headers=headers,
+                                 timeout=self.timeout)
             resp.raise_for_status()
             return resp
 
@@ -67,7 +74,10 @@ class RemoteWhisperBackend(TranscriptionBackend):
 
     def is_available(self) -> bool:
         try:
-            resp = requests.get(f"{self.server_url}/health", timeout=5)
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            resp = requests.get(f"{self.server_url}/health", headers=headers, timeout=5)
             return resp.status_code == 200
         except requests.RequestException:
             return False

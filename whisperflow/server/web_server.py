@@ -119,7 +119,8 @@ def create_app(api_key: str = ""):
         trans_cfg = config["transcription"]
         if trans_cfg["backend"] == "remote":
             from whisperflow.transcription.remote_whisper import RemoteWhisperBackend
-            backend = RemoteWhisperBackend(server_url=trans_cfg["remote_url"])
+            remote_key = trans_cfg.get("remote_api_key", "") or os.environ.get("WHISPERFLOW_API_KEY", "")
+            backend = RemoteWhisperBackend(server_url=trans_cfg["remote_url"], api_key=remote_key)
             if backend.is_available():
                 _state["transcriber"] = backend
                 logger.info(f"Using remote transcription: {trans_cfg['remote_url']}")
@@ -412,9 +413,9 @@ def create_app(api_key: str = ""):
         authorization: str | None = Header(default=None),
     ):
         _check_auth(authorization)
-        _init_components()
         if not q:
             return {"entries": []}
+        _init_components()
         entries = _state["history"].search(q, limit)
         return {"entries": entries}
 
