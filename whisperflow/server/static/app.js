@@ -109,13 +109,26 @@
   // ================================================================
   // API HELPERS
   // ================================================================
-  function apiFetch(path, options = {}) {
+  async function apiFetch(path, options = {}) {
     const url = state.serverUrl + path;
     const headers = options.headers || {};
     if (state.apiKey) {
       headers["Authorization"] = "Bearer " + state.apiKey;
     }
-    return fetch(url, { ...options, headers });
+    try {
+      return await fetch(url, { ...options, headers });
+    } catch (e) {
+      // Improve error message for common reverse proxy / CORS issues
+      if (e instanceof TypeError && e.message === "Failed to fetch") {
+        const isExternal = state.serverUrl !== window.location.origin;
+        const hint = isExternal
+          ? "Check that the server URL is correct and CORS is configured. " +
+            "If using a reverse proxy, ensure it forwards WebSocket Upgrade headers."
+          : "Server may be unreachable. Check that WhisperFlow is running.";
+        throw new Error("Network error: " + hint);
+      }
+      throw e;
+    }
   }
 
   // ================================================================

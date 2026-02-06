@@ -24,13 +24,17 @@ User=whisperflow
 Group=whisperflow
 WorkingDirectory=/opt/whisperflow
 
-ExecStart=/usr/bin/env whisperflow-web --host 0.0.0.0 --port 8766
+ExecStart=/usr/bin/env whisperflow-web --host 0.0.0.0 --port 8766 --proxy-headers
 
 # Optional environment variables — uncomment and set as needed:
 # WHISPERFLOW_API_KEY protects the web API with a bearer token
 # WHISPERFLOW_DATA_DIR overrides the default data/config directory
+# WHISPERFLOW_ALLOWED_ORIGINS: comma-separated CORS origins for external access
+# WHISPERFLOW_PROXY_HEADERS: set to "1" to trust X-Forwarded-* headers (for NPM/Caddy/Cloudflare)
 Environment=WHISPERFLOW_API_KEY=
 Environment=WHISPERFLOW_DATA_DIR=
+Environment=WHISPERFLOW_ALLOWED_ORIGINS=
+Environment=WHISPERFLOW_PROXY_HEADERS=1
 
 # You can also load environment from a file:
 # EnvironmentFile=/etc/whisperflow/whisperflow.env

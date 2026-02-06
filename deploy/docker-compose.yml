@@ -23,12 +23,17 @@ services:
       dockerfile: Dockerfile
     container_name: whisperflow-web
     ports:
-      - "8766:8766"
+      # Use 127.0.0.1 binding when behind a reverse proxy (NPM/Caddy) so
+      # only the proxy can reach the container directly.
+      # Change to "8766:8766" if you need direct LAN access without a proxy.
+      - "127.0.0.1:8766:8766"
     volumes:
       - whisperflow-data:/data
     environment:
       - WHISPERFLOW_API_KEY=${WHISPERFLOW_API_KEY:-}
       - WHISPERFLOW_DATA_DIR=/data
+      - WHISPERFLOW_ALLOWED_ORIGINS=${WHISPERFLOW_ALLOWED_ORIGINS:-}
+      - WHISPERFLOW_PROXY_HEADERS=1
     restart: unless-stopped
 
   # -------------------------------------------------------------------------

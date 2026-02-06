@@ -102,9 +102,23 @@ def _convert_to_wav(audio_bytes: bytes, content_type: str = "") -> bytes:
                 pass
 
 
-def create_app(api_key: str = ""):
+def _get_real_ip(request) -> str:
+    """Extract real client IP, respecting reverse proxy headers."""
+    # X-Real-IP is typically set by Nginx Proxy Manager
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    # X-Forwarded-For may contain: client, proxy1, proxy2
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
     """Create the FastAPI application with API + static PWA serving."""
     from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.staticfiles import StaticFiles
     from fastapi.responses import FileResponse, JSONResponse
 
@@ -114,11 +128,49 @@ def create_app(api_key: str = ""):
 
     app = FastAPI(title="WhisperFlow Web", version="0.1.0")
 
-    # Rate limiting middleware
+    # -- CORS: allow external domains (Cloudflare, custom domains, LAN) --
+    origins = allowed_origins or []
+    # Always allow same-origin and common LAN patterns
+    origins.extend([
+        "http://localhost:8766",
+        "https://localhost:8766",
+    ])
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["Content-Disposition", "Content-Type"],
+    )
+
+    # -- Content Security Policy --
+    class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: StarletteRequest, call_next):
+            response = await call_next(request)
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            # CSP allows self + inline styles (needed for dynamic themes) + ws/wss + data URIs
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "connect-src 'self' ws: wss:; "
+                "img-src 'self' data: blob:; "
+                "media-src 'self' blob:; "
+                "font-src 'self';"
+            )
+            return response
+
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    # -- Rate limiting (uses real client IP behind reverse proxy) --
     class RateLimitMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: StarletteRequest, call_next):
             if request.url.path.startswith("/api/"):
-                client_ip = request.client.host if request.client else "unknown"
+                client_ip = _get_real_ip(request)
                 if _check_rate_limit(client_ip):
                     return StarletteJSONResponse(
                         {"detail": "Rate limit exceeded. Try again later."},
@@ -764,6 +816,19 @@ def main():
         default=os.environ.get("WHISPERFLOW_DATA_DIR", ""),
         help="Override data directory for all storage (config, history, dictionary, etc.)",
     )
+    parser.add_argument(
+        "--allowed-origins",
+        default=os.environ.get("WHISPERFLOW_ALLOWED_ORIGINS", ""),
+        help="Comma-separated list of allowed CORS origins "
+             "(e.g. 'https://whisperflow.example.com,https://my.domain.com'). "
+             "Or set WHISPERFLOW_ALLOWED_ORIGINS env var.",
+    )
+    parser.add_argument(
+        "--proxy-headers", action="store_true",
+        default=os.environ.get("WHISPERFLOW_PROXY_HEADERS", "") != "",
+        help="Trust X-Forwarded-* headers from reverse proxy (NPM, Caddy, etc.). "
+             "Or set WHISPERFLOW_PROXY_HEADERS=1 env var.",
+    )
     args = parser.parse_args()
 
     if args.data_dir:
@@ -776,9 +841,13 @@ def main():
     else:
         logger.warning("No API key set -- server is open to all network requests")
 
+    origins = [o.strip() for o in args.allowed_origins.split(",") if o.strip()]
+    if origins:
+        logger.info(f"CORS allowed origins: {origins}")
+
     import uvicorn
 
-    app = create_app(api_key=api_key)
+    app = create_app(api_key=api_key, allowed_origins=origins)
 
     ssl_kwargs = {}
     if args.ssl_cert and args.ssl_key:
@@ -788,13 +857,20 @@ def main():
     else:
         logger.warning(
             "Running without HTTPS. Mobile microphone access requires HTTPS. "
-            "Generate a self-signed cert: "
+            "Use --proxy-headers behind a TLS-terminating reverse proxy (NPM, Caddy, Cloudflare). "
+            "Or generate a self-signed cert: "
             "openssl req -x509 -newkey rsa:4096 -nodes -keyout key.pem -out cert.pem -days 365"
         )
 
+    uvicorn_kwargs = {}
+    if args.proxy_headers:
+        uvicorn_kwargs["proxy_headers"] = True
+        uvicorn_kwargs["forwarded_allow_ips"] = "*"
+        logger.info("Trusting proxy headers (X-Forwarded-*)")
+
     logger.info(f"Starting WhisperFlow Web on {args.host}:{args.port}")
     logger.info(f"Open on your phone: {'https' if ssl_kwargs else 'http'}://<your-ip>:{args.port}")
-    uvicorn.run(app, host=args.host, port=args.port, **ssl_kwargs)
+    uvicorn.run(app, host=args.host, port=args.port, **ssl_kwargs, **uvicorn_kwargs)
 
 
 if __name__ == "__main__":
