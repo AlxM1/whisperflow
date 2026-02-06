@@ -12,6 +12,9 @@ import sounddevice as sd
 
 logger = logging.getLogger(__name__)
 
+# Maximum recording buffer: 5 minutes at 16kHz = ~9.6M samples
+MAX_BUFFER_FRAMES = 3000  # 3000 * 1600 samples/frame = 300s at 100ms blocks
+
 
 class AudioCapture:
     """Captures audio from the microphone with hold-to-talk semantics."""
@@ -29,7 +32,7 @@ class AudioCapture:
         self.on_audio_ready = on_audio_ready
 
         self._recording = False
-        self._frames: deque[np.ndarray] = deque()
+        self._frames: deque[np.ndarray] = deque(maxlen=MAX_BUFFER_FRAMES)
         self._stream: sd.InputStream | None = None
         self._lock = threading.Lock()
 
@@ -40,15 +43,21 @@ class AudioCapture:
                 return
             self._frames.clear()
             self._recording = True
-            self._stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                dtype=self.dtype,
-                callback=self._audio_callback,
-                blocksize=int(self.sample_rate * 0.1),  # 100ms blocks
-            )
-            self._stream.start()
-            logger.info("Recording started")
+            try:
+                self._stream = sd.InputStream(
+                    samplerate=self.sample_rate,
+                    channels=self.channels,
+                    dtype=self.dtype,
+                    callback=self._audio_callback,
+                    blocksize=int(self.sample_rate * 0.1),  # 100ms blocks
+                )
+                self._stream.start()
+                logger.info("Recording started")
+            except Exception as e:
+                self._recording = False
+                self._stream = None
+                logger.error(f"Failed to start recording: {e}")
+                raise
 
     def stop_recording(self) -> bytes:
         """Stop capturing and return the recorded audio as WAV bytes."""
@@ -60,9 +69,11 @@ class AudioCapture:
                 self._stream.stop()
                 self._stream.close()
                 self._stream = None
+            # Snapshot frames under lock to avoid race with _audio_callback
+            frames = list(self._frames)
+            self._frames.clear()
 
-        audio_data = np.concatenate(list(self._frames)) if self._frames else np.array([])
-        self._frames.clear()
+        audio_data = np.concatenate(frames) if frames else np.array([])
 
         if len(audio_data) == 0:
             logger.warning("No audio captured")
@@ -92,6 +103,7 @@ class AudioCapture:
         if status:
             logger.warning(f"Audio status: {status}")
         if self._recording:
+            # deque with maxlen handles overflow automatically
             self._frames.append(indata[:, 0].copy() if indata.ndim > 1 else indata.copy())
 
     def _to_wav(self, audio_data: np.ndarray) -> bytes:

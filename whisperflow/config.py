@@ -1,5 +1,6 @@
 """Configuration management for WhisperFlow."""
 
+import logging
 import os
 import json
 import shutil
@@ -8,10 +9,19 @@ from typing import Any
 
 import yaml
 
+logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path(os.environ.get("WHISPERFLOW_CONFIG_DIR", "~/.config/whisperflow")).expanduser()
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 DEFAULT_CONFIG = Path(__file__).parent.parent / "config" / "default_config.yaml"
+
+# Valid values for config validation
+VALID_BACKENDS = {"local", "remote"}
+VALID_DEVICES = {"cpu", "cuda", "auto"}
+VALID_COMPUTE_TYPES = {"float32", "float16", "int8"}
+VALID_LLM_PROVIDERS = {"ollama", "openai", "anthropic", "none"}
+VALID_INJECTION_METHODS = {"auto", "xdotool", "xclip", "wl-copy", "wayland"}
+VALID_OVERLAY_POSITIONS = {"top-right", "top-left", "bottom-right", "bottom-left", "center"}
 
 
 def ensure_config_dir() -> None:
@@ -24,6 +34,53 @@ def ensure_config_dir() -> None:
         fpath = CONFIG_DIR / fname
         if not fpath.exists():
             fpath.write_text("{}")
+
+
+def validate_config(config: dict) -> list[str]:
+    """Validate configuration values. Returns list of warnings."""
+    warnings = []
+
+    # Transcription
+    trans = config.get("transcription", {})
+    if trans.get("backend") not in VALID_BACKENDS:
+        warnings.append(f"Invalid transcription.backend: '{trans.get('backend')}' (valid: {VALID_BACKENDS})")
+    if trans.get("device") not in VALID_DEVICES:
+        warnings.append(f"Invalid transcription.device: '{trans.get('device')}' (valid: {VALID_DEVICES})")
+    if trans.get("compute_type") not in VALID_COMPUTE_TYPES:
+        warnings.append(f"Invalid transcription.compute_type: '{trans.get('compute_type')}' (valid: {VALID_COMPUTE_TYPES})")
+
+    # LLM
+    llm = config.get("llm", {})
+    if llm.get("provider") not in VALID_LLM_PROVIDERS:
+        warnings.append(f"Invalid llm.provider: '{llm.get('provider')}' (valid: {VALID_LLM_PROVIDERS})")
+
+    # Injection
+    inj = config.get("injection", {})
+    if inj.get("method") not in VALID_INJECTION_METHODS:
+        warnings.append(f"Invalid injection.method: '{inj.get('method')}' (valid: {VALID_INJECTION_METHODS})")
+
+    # Audio
+    audio = config.get("audio", {})
+    vad_thresh = audio.get("vad_threshold", 0.5)
+    if not isinstance(vad_thresh, (int, float)) or not 0 <= vad_thresh <= 1:
+        warnings.append(f"Invalid audio.vad_threshold: {vad_thresh} (must be 0.0-1.0)")
+    sr = audio.get("sample_rate", 16000)
+    if sr not in (8000, 16000, 22050, 44100, 48000):
+        warnings.append(f"Unusual audio.sample_rate: {sr} (expected 16000)")
+
+    # UI
+    ui = config.get("ui", {})
+    if ui.get("overlay_position") not in VALID_OVERLAY_POSITIONS:
+        warnings.append(f"Invalid ui.overlay_position: '{ui.get('overlay_position')}' (valid: {VALID_OVERLAY_POSITIONS})")
+
+    # Hotkeys — basic check that they contain '+'
+    hotkey = config.get("hotkey", {})
+    for key_name in ("hold_key", "command_key", "whisper_mode_key"):
+        val = hotkey.get(key_name, "")
+        if not val or not isinstance(val, str):
+            warnings.append(f"Invalid hotkey.{key_name}: '{val}'")
+
+    return warnings
 
 
 def load_config() -> dict[str, Any]:
@@ -39,6 +96,12 @@ def load_config() -> dict[str, Any]:
     for section in ("dictionary", "snippets", "style", "history"):
         if "path" in config.get(section, {}):
             config[section]["path"] = str(Path(config[section]["path"]).expanduser())
+
+    # Validate and warn
+    warnings = validate_config(config)
+    for w in warnings:
+        logger.warning(f"Config: {w}")
+
     return config
 
 

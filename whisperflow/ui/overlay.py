@@ -22,7 +22,7 @@ if _qt_available:
         def __init__(self, position: str = "top-right"):
             super().__init__()
             self._position = position
-            self._mode = "idle"  # idle, recording, processing, command
+            self._mode = "idle"  # idle, recording, processing, command, error
             self._audio_level = 0.0
             self._pulse_opacity = 1.0
 
@@ -85,6 +85,7 @@ if _qt_available:
                 "recording": QColor(200, 40, 40, 200),
                 "processing": QColor(40, 120, 200, 200),
                 "command": QColor(160, 80, 200, 200),
+                "error": QColor(200, 100, 0, 220),
             }
             bg = colors.get(self._mode, colors["idle"])
             painter.setBrush(bg)
@@ -92,13 +93,14 @@ if _qt_available:
             painter.drawRoundedRect(self.rect(), 12, 12)
 
         def set_mode(self, mode: str, label: str = ""):
-            """Set the overlay mode: idle, recording, processing, command."""
+            """Set the overlay mode: idle, recording, processing, command, error."""
             self._mode = mode
             labels = {
                 "idle": "WhisperFlow",
-                "recording": "🎤 Listening...",
-                "processing": "⚡ Processing...",
-                "command": "🔧 Command Mode",
+                "recording": "Listening...",
+                "processing": "Processing...",
+                "command": "Command Mode",
+                "error": "Error",
             }
             self._label.setText(label or labels.get(mode, "WhisperFlow"))
 
@@ -107,6 +109,7 @@ if _qt_available:
                 "recording": "#ff4444",
                 "processing": "#4488ff",
                 "command": "#aa55dd",
+                "error": "#ff8800",
             }
             self._dot.setStyleSheet(f"color: {dot_colors.get(mode, 'gray')};")
 
@@ -116,10 +119,14 @@ if _qt_available:
                 self._pulse_timer.stop()
 
             self.update()
-            if mode != "idle":
-                self.show()
-            else:
+            if mode == "idle":
                 self.hide()
+            elif mode == "error":
+                self.show()
+                # Auto-hide error after 3 seconds
+                QTimer.singleShot(3000, lambda: self.set_mode("idle"))
+            else:
+                self.show()
 
         def set_audio_level(self, level: float):
             """Update audio level for visual feedback (0.0 to 1.0)."""
@@ -136,8 +143,10 @@ else:
     class RecordingOverlay:
         """Stub overlay when PyQt6 is not available."""
         def __init__(self, position: str = "top-right"):
+            self._mode = "idle"
             logger.warning("PyQt6 not available, recording overlay disabled")
-        def set_mode(self, mode: str, label: str = ""): pass
+        def set_mode(self, mode: str, label: str = ""):
+            self._mode = mode
         def set_audio_level(self, level: float): pass
         def show(self): pass
         def hide(self): pass

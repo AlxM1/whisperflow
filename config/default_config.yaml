@@ -126,7 +126,7 @@ ui:
 
 # Text injection method
 injection:
-  # Method: "xdotool", "xclip", "wl-copy" (Wayland)
-  method: xdotool
+  # Method: "auto" (auto-detect), "xdotool" (X11), "wl-copy"/"wayland" (Wayland)
+  method: auto
   # Delay before injection (ms)
   delay_ms: 50

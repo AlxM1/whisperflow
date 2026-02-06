@@ -99,27 +99,27 @@ class ProcessingPipeline:
                 duration=duration,
             )
 
-        # Step 2: Auto-edit
+        # Step 2: Auto-edit (with optional tone + style in single LLM call)
         if self._auto_edit_enabled:
-            # Use combined prompt with tone for efficiency (single LLM call)
+            # Build the combined prompt: auto-edit base + tone + style
             if self._tone_matching and context.app_name:
-                combined_prompt = self.tone_matcher.build_combined_prompt(context)
-                response = self.llm.complete(combined_prompt, raw_text)
-                processed = response.text if response.text else raw_text
+                prompt = self.tone_matcher.build_combined_prompt(context)
             else:
-                processed = self.auto_editor.process(raw_text)
+                from .prompts import AUTO_EDIT_PROMPT
+                prompt = AUTO_EDIT_PROMPT
+
+            # Append style hints if available (single LLM call, not a second one)
+            style_addition = self.style_learner.get_style_prompt_addition()
+            if style_addition and len(raw_text.split()) > 5:
+                prompt += style_addition
+
+            response = self.llm.complete(prompt, raw_text)
+            processed = response.text if response.text else raw_text
+        elif self._tone_matching and context.app_name:
+            # Tone matching still applies even when auto-edit is off
+            processed = self.tone_matcher.apply_tone(raw_text, context)
         else:
             processed = raw_text
-
-        # Step 3: Apply style preferences
-        style_addition = self.style_learner.get_style_prompt_addition()
-        if style_addition and self._auto_edit_enabled and len(raw_text.split()) > 5:
-            # Re-process with style hints if we have learned preferences
-            from .prompts import AUTO_EDIT_PROMPT
-            style_prompt = AUTO_EDIT_PROMPT + style_addition
-            response = self.llm.complete(style_prompt, raw_text)
-            if response.text:
-                processed = response.text
 
         return PipelineResult(
             original_text=raw_text,

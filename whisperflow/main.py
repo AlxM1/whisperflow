@@ -8,11 +8,12 @@ import logging
 import signal
 import sys
 import threading
+import time
 
 from .config import load_config, save_config
 from .audio.capture import AudioCapture
 from .transcription.base import TranscriptionResult
-from .llm.factory import create_llm_provider
+from .llm.factory import create_llm_provider, NoopProvider
 from .features.dictionary import PersonalDictionary
 from .features.snippets import SnippetManager
 from .features.style_learning import StyleLearner
@@ -28,6 +29,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Transcription timeout in seconds
+TRANSCRIPTION_TIMEOUT = 60
+
 
 class WhisperFlowApp:
     """Main application class orchestrating all components."""
@@ -37,6 +41,7 @@ class WhisperFlowApp:
         self._whisper_mode = False
         self._command_mode_active = False
         self._running = False
+        self._vad = None
 
         # Initialize components
         logger.info("Initializing WhisperFlow...")
@@ -47,11 +52,21 @@ class WhisperFlowApp:
             channels=self.config["audio"]["channels"],
         )
 
+        # VAD (Voice Activity Detection) — optional, loaded lazily
+        self._vad_threshold = self.config["audio"].get("vad_threshold", 0.5)
+        self._min_speech_duration = self.config["audio"].get("min_speech_duration", 0.3)
+
         # Transcription backend
         self.transcriber = self._create_transcriber()
 
         # LLM
         self.llm = create_llm_provider(self.config["llm"])
+        if isinstance(self.llm, NoopProvider) and self.config["llm"].get("provider", "none") != "none":
+            logger.warning(
+                "LLM provider '%s' is not available — AI features (auto-edit, "
+                "tone matching, command mode) will pass text through unchanged",
+                self.config["llm"].get("provider"),
+            )
 
         # Features
         self.dictionary = PersonalDictionary(self.config["dictionary"]["path"])
@@ -123,7 +138,12 @@ class WhisperFlowApp:
     def _on_hold_start(self):
         """Called when hold-to-talk key is pressed."""
         logger.info("Hold-to-talk: START")
-        self.audio.start_recording()
+        try:
+            self.audio.start_recording()
+        except Exception:
+            if self._overlay:
+                self._overlay.set_mode("error", "Microphone error")
+            return
         if self._overlay:
             self._overlay.set_mode("recording")
         if self._tray:
@@ -133,8 +153,6 @@ class WhisperFlowApp:
         """Called when hold-to-talk key is released."""
         logger.info("Hold-to-talk: END")
         audio_data = self.audio.stop_recording()
-        if self._overlay:
-            self._overlay.set_mode("processing")
         if self._tray:
             self._tray.set_recording(False)
 
@@ -142,6 +160,16 @@ class WhisperFlowApp:
             if self._overlay:
                 self._overlay.set_mode("idle")
             return
+
+        # Check for speech using VAD before burning transcription resources
+        if not self._check_vad(audio_data):
+            logger.info("No speech detected by VAD, skipping transcription")
+            if self._overlay:
+                self._overlay.set_mode("idle")
+            return
+
+        if self._overlay:
+            self._overlay.set_mode("processing")
 
         # Process in background thread
         threading.Thread(
@@ -154,7 +182,13 @@ class WhisperFlowApp:
         """Called when command mode key is pressed."""
         logger.info("Command mode: START")
         self._command_mode_active = True
-        self.audio.start_recording()
+        try:
+            self.audio.start_recording()
+        except Exception:
+            self._command_mode_active = False
+            if self._overlay:
+                self._overlay.set_mode("error", "Microphone error")
+            return
         if self._overlay:
             self._overlay.set_mode("command")
 
@@ -163,13 +197,20 @@ class WhisperFlowApp:
         logger.info("Command mode: END")
         audio_data = self.audio.stop_recording()
         self._command_mode_active = False
-        if self._overlay:
-            self._overlay.set_mode("processing")
 
         if not audio_data:
             if self._overlay:
                 self._overlay.set_mode("idle")
             return
+
+        if not self._check_vad(audio_data):
+            logger.info("No speech detected by VAD, skipping transcription")
+            if self._overlay:
+                self._overlay.set_mode("idle")
+            return
+
+        if self._overlay:
+            self._overlay.set_mode("processing")
 
         threading.Thread(
             target=self._process_audio,
@@ -185,21 +226,85 @@ class WhisperFlowApp:
         if self._tray:
             self._tray.show_notification("WhisperFlow", f"Whisper mode: {state}")
 
+    # -- VAD --
+
+    def _get_vad(self):
+        """Lazy-load VAD model on first use."""
+        if self._vad is None:
+            try:
+                from .audio.vad import VoiceActivityDetector
+                self._vad = VoiceActivityDetector(threshold=self._vad_threshold)
+                self._vad.load()
+            except Exception as e:
+                logger.warning(f"VAD unavailable, skipping speech detection: {e}")
+                self._vad = False  # sentinel: tried and failed
+        return self._vad
+
+    def _check_vad(self, wav_bytes: bytes) -> bool:
+        """Check if audio contains speech using VAD. Returns True if speech found or VAD unavailable."""
+        vad = self._get_vad()
+        if not vad:
+            return True  # VAD not available, assume speech present
+
+        try:
+            import io
+            import wave
+            import numpy as np
+
+            buf = io.BytesIO(wav_bytes)
+            with wave.open(buf, "rb") as wf:
+                frames = wf.readframes(wf.getnframes())
+                sample_rate = wf.getframerate()
+
+            audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+            # Check if total duration is below minimum
+            duration = len(audio_np) / sample_rate
+            if duration < self._min_speech_duration:
+                return False
+
+            # Check chunks for speech (512 samples = 32ms at 16kHz)
+            chunk_size = 512
+            speech_frames = 0
+            total_frames = 0
+            vad.reset()
+            for i in range(0, len(audio_np) - chunk_size, chunk_size):
+                chunk = audio_np[i:i + chunk_size]
+                total_frames += 1
+                if vad.is_speech(chunk):
+                    speech_frames += 1
+
+            if total_frames == 0:
+                return False
+
+            speech_ratio = speech_frames / total_frames
+            has_speech = speech_ratio > 0.1  # At least 10% of frames have speech
+            logger.debug(f"VAD: {speech_frames}/{total_frames} frames with speech ({speech_ratio:.1%})")
+            return has_speech
+
+        except Exception as e:
+            logger.warning(f"VAD check failed: {e}")
+            return True  # Fail open
+
     # -- Audio processing --
 
     def _process_audio(self, audio_data: bytes, is_command: bool):
         """Process captured audio through the full pipeline."""
         try:
-            # Step 1: Transcribe
+            # Step 1: Transcribe (with timeout)
             initial_prompt = self.dictionary.get_whisper_prompt()
             lang_cfg = self.config["transcription"]["language"]
             language = lang_cfg if lang_cfg != "auto" else None
 
-            result = self.transcriber.transcribe(
-                audio_data,
-                language=language,
-                initial_prompt=initial_prompt or None,
+            result = self._transcribe_with_timeout(
+                audio_data, language, initial_prompt or None
             )
+
+            if result is None:
+                logger.error("Transcription timed out")
+                if self._overlay:
+                    self._overlay.set_mode("error", "Transcription timeout")
+                return
 
             if result.is_empty:
                 logger.info("Empty transcription, skipping")
@@ -223,7 +328,12 @@ class WhisperFlowApp:
 
             # Step 3: Inject text into active app
             if pipeline_result.processed_text:
-                self.injector.inject(pipeline_result.processed_text)
+                success = self.injector.inject(pipeline_result.processed_text)
+                if not success:
+                    logger.error("Text injection failed")
+                    if self._overlay:
+                        self._overlay.set_mode("error", "Injection failed")
+                    return
 
             # Step 4: Save to history
             if self.config["history"]["enabled"]:
@@ -236,11 +346,47 @@ class WhisperFlowApp:
                     duration=result.duration,
                 )
 
+            # Step 5: Auto-learn dictionary from transcription vs processed
+            if self.config["dictionary"].get("auto_learn", True):
+                self.dictionary.check_and_learn(result.text, pipeline_result.processed_text)
+
         except Exception:
             logger.exception("Error processing audio")
-        finally:
             if self._overlay:
+                self._overlay.set_mode("error", "Processing error")
+                return
+        finally:
+            # Only reset to idle if we didn't set error above
+            if self._overlay and self._overlay._mode != "error":
                 self._overlay.set_mode("idle")
+
+    def _transcribe_with_timeout(self, audio_data, language, initial_prompt):
+        """Run transcription with a timeout. Returns None on timeout."""
+        result_holder = [None]
+        error_holder = [None]
+
+        def _do_transcribe():
+            try:
+                result_holder[0] = self.transcriber.transcribe(
+                    audio_data,
+                    language=language,
+                    initial_prompt=initial_prompt,
+                )
+            except Exception as e:
+                error_holder[0] = e
+
+        t = threading.Thread(target=_do_transcribe, daemon=True)
+        t.start()
+        t.join(timeout=TRANSCRIPTION_TIMEOUT)
+
+        if t.is_alive():
+            logger.error(f"Transcription exceeded {TRANSCRIPTION_TIMEOUT}s timeout")
+            return None
+
+        if error_holder[0]:
+            raise error_holder[0]
+
+        return result_holder[0]
 
     # -- Settings UI callbacks --
 

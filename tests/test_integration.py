@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import wave
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -250,11 +251,12 @@ class TestTextInjection:
         injector = TextInjector()
         assert not injector.inject("")
 
+    @patch("whisperflow.input.injection.CLIPBOARD_RESTORE_DELAY", 0)
     @patch("whisperflow.input.injection.subprocess")
     def test_inject_x11(self, mock_subprocess):
         from whisperflow.input.injection import TextInjector
 
-        mock_subprocess.run.return_value = MagicMock(stdout="")
+        mock_subprocess.run.return_value = MagicMock(stdout="", returncode=0)
         mock_subprocess.Popen.return_value = MagicMock()
         mock_subprocess.Popen.return_value.communicate.return_value = (b"", b"")
 
@@ -262,13 +264,14 @@ class TestTextInjection:
         result = injector.inject("Hello World")
         assert result is True
 
+    @patch("whisperflow.input.injection.CLIPBOARD_RESTORE_DELAY", 0)
     @patch("whisperflow.input.injection.subprocess")
     def test_inject_wayland(self, mock_subprocess):
         from whisperflow.input.injection import TextInjector
 
         mock_subprocess.Popen.return_value = MagicMock()
         mock_subprocess.Popen.return_value.communicate.return_value = (b"", b"")
-        mock_subprocess.run.return_value = MagicMock()
+        mock_subprocess.run.return_value = MagicMock(stdout="", returncode=0)
 
         injector = TextInjector(method="wl-copy", delay_ms=0)
         result = injector.inject("Hello World")
@@ -376,8 +379,11 @@ class TestConfig:
 
     def test_load_default_config(self):
         """Default config YAML should load without errors and contain expected sections."""
+        import whisperflow.config as cfg_mod
         from whisperflow.config import load_config
-        with patch.dict(os.environ, {"WHISPERFLOW_CONFIG_DIR": tempfile.mkdtemp()}):
+        tmpdir = Path(tempfile.mkdtemp())
+        with patch.object(cfg_mod, "CONFIG_DIR", tmpdir), \
+             patch.object(cfg_mod, "CONFIG_FILE", tmpdir / "config.yaml"):
             config = load_config()
             assert "audio" in config
             assert "hotkey" in config
@@ -393,14 +399,17 @@ class TestConfig:
 
     def test_config_default_values(self):
         """Verify key default values in config."""
+        import whisperflow.config as cfg_mod
         from whisperflow.config import load_config
-        with patch.dict(os.environ, {"WHISPERFLOW_CONFIG_DIR": tempfile.mkdtemp()}):
+        tmpdir = Path(tempfile.mkdtemp())
+        with patch.object(cfg_mod, "CONFIG_DIR", tmpdir), \
+             patch.object(cfg_mod, "CONFIG_FILE", tmpdir / "config.yaml"):
             config = load_config()
             assert config["audio"]["sample_rate"] == 16000
             assert config["transcription"]["model_size"] == "large-v3-turbo"
             assert config["llm"]["provider"] == "ollama"
             assert config["processing"]["auto_edit"] is True
-            assert config["injection"]["method"] == "xdotool"
+            assert config["injection"]["method"] == "auto"
 
 
 # ============================================================================
@@ -567,7 +576,27 @@ class TestGPUServer:
         client = TestClient(app)
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok", "gpu": True}
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["gpu"] is True
+        assert data["auth_required"] is False
+
+    def test_health_endpoint_auth_required(self):
+        from whisperflow.server.gpu_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(api_key="test-secret-key")
+        client = TestClient(app)
+        # Without auth
+        response = client.get("/health")
+        assert response.status_code == 401
+        # With correct auth
+        response = client.get("/health", headers={"Authorization": "Bearer test-secret-key"})
+        assert response.status_code == 200
+        assert response.json()["auth_required"] is True
+        # With wrong auth
+        response = client.get("/health", headers={"Authorization": "Bearer wrong-key"})
+        assert response.status_code == 403
 
 
 # ============================================================================
@@ -647,3 +676,147 @@ class TestModuleImports:
 
     def test_import_server(self):
         import whisperflow.server.gpu_server
+
+    def test_import_retry(self):
+        import whisperflow.retry
+
+
+# ============================================================================
+# Retry with Backoff
+# ============================================================================
+
+class TestRetryWithBackoff:
+    def test_succeeds_immediately(self):
+        from whisperflow.retry import retry_with_backoff
+        result = retry_with_backoff(lambda: 42, max_retries=3)
+        assert result == 42
+
+    def test_retries_on_failure_then_succeeds(self):
+        from whisperflow.retry import retry_with_backoff
+        calls = [0]
+        def flaky():
+            calls[0] += 1
+            if calls[0] < 3:
+                raise ConnectionError("fail")
+            return "ok"
+        result = retry_with_backoff(flaky, max_retries=3, base_delay=0.01,
+                                     exceptions=(ConnectionError,))
+        assert result == "ok"
+        assert calls[0] == 3
+
+    def test_raises_after_max_retries(self):
+        from whisperflow.retry import retry_with_backoff
+        def always_fail():
+            raise ConnectionError("down")
+        with pytest.raises(ConnectionError):
+            retry_with_backoff(always_fail, max_retries=2, base_delay=0.01,
+                               exceptions=(ConnectionError,))
+
+    def test_does_not_retry_unmatched_exception(self):
+        from whisperflow.retry import retry_with_backoff
+        def bad():
+            raise ValueError("wrong type")
+        with pytest.raises(ValueError):
+            retry_with_backoff(bad, max_retries=3, base_delay=0.01,
+                               exceptions=(ConnectionError,))
+
+
+# ============================================================================
+# Config Validation
+# ============================================================================
+
+class TestConfigValidation:
+    def test_valid_config_no_warnings(self):
+        from whisperflow.config import validate_config, load_config
+        with patch.dict(os.environ, {"WHISPERFLOW_CONFIG_DIR": tempfile.mkdtemp()}):
+            config = load_config()
+            warnings = validate_config(config)
+            assert len(warnings) == 0
+
+    def test_invalid_backend(self):
+        from whisperflow.config import validate_config
+        config = {
+            "transcription": {"backend": "invalid", "device": "auto", "compute_type": "float16"},
+            "llm": {"provider": "ollama"},
+            "injection": {"method": "auto"},
+            "audio": {"vad_threshold": 0.5, "sample_rate": 16000},
+            "ui": {"overlay_position": "top-right"},
+            "hotkey": {"hold_key": "ctrl_l+space", "command_key": "ctrl_l+shift+space",
+                       "whisper_mode_key": "ctrl_l+alt+w"},
+        }
+        warnings = validate_config(config)
+        assert any("transcription.backend" in w for w in warnings)
+
+    def test_invalid_vad_threshold(self):
+        from whisperflow.config import validate_config
+        config = {
+            "transcription": {"backend": "local", "device": "auto", "compute_type": "float16"},
+            "llm": {"provider": "ollama"},
+            "injection": {"method": "auto"},
+            "audio": {"vad_threshold": 2.0, "sample_rate": 16000},
+            "ui": {"overlay_position": "top-right"},
+            "hotkey": {"hold_key": "ctrl_l+space", "command_key": "ctrl_l+shift+space",
+                       "whisper_mode_key": "ctrl_l+alt+w"},
+        }
+        warnings = validate_config(config)
+        assert any("vad_threshold" in w for w in warnings)
+
+
+# ============================================================================
+# Injection Auto-Detection
+# ============================================================================
+
+class TestInjectionAutoDetect:
+    def test_auto_detects_x11(self):
+        from whisperflow.input.injection import TextInjector
+        with patch.dict(os.environ, {"DISPLAY": ":0"}, clear=False):
+            os.environ.pop("WAYLAND_DISPLAY", None)
+            injector = TextInjector(method="auto")
+            assert injector.method == "x11"
+
+    def test_auto_detects_wayland(self):
+        from whisperflow.input.injection import TextInjector
+        with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}, clear=False):
+            injector = TextInjector(method="auto")
+            assert injector.method == "wayland"
+
+    def test_wl_copy_maps_to_wayland(self):
+        from whisperflow.input.injection import TextInjector
+        injector = TextInjector(method="wl-copy")
+        assert injector.method == "wayland"
+
+
+# ============================================================================
+# Pipeline Tone With Auto-Edit Disabled
+# ============================================================================
+
+class TestPipelineToneIndependent:
+    """Verify tone matching works even when auto_edit is disabled."""
+
+    def test_tone_applies_without_auto_edit(self):
+        from whisperflow.llm.factory import NoopProvider
+        from whisperflow.features.dictionary import PersonalDictionary
+        from whisperflow.features.snippets import SnippetManager
+        from whisperflow.features.style_learning import StyleLearner
+        from whisperflow.processing.pipeline import ProcessingPipeline
+        from whisperflow.input.context import WindowContext
+
+        tmpdir = tempfile.mkdtemp()
+        config = {
+            "processing": {"auto_edit": False, "context_aware": True, "tone_matching": True},
+            "context": {"app_tones": {"slack": "casual"}},
+        }
+        pipeline = ProcessingPipeline(
+            llm=NoopProvider(),
+            dictionary=PersonalDictionary(os.path.join(tmpdir, "d.json")),
+            snippets=SnippetManager(os.path.join(tmpdir, "s.json")),
+            style_learner=StyleLearner(os.path.join(tmpdir, "st.json")),
+            config=config,
+        )
+        # Mock the active window to be slack
+        with patch("whisperflow.processing.pipeline.get_active_window",
+                    return_value=WindowContext("slack", "general", "Slack")):
+            result = pipeline.process_dictation("hello there", "", 0.0)
+            # With NoopProvider, tone_matcher.apply_tone returns text unchanged
+            assert result.processed_text == "hello there"
+            assert result.mode == "dictation"

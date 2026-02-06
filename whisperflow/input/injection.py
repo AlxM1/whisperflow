@@ -1,17 +1,36 @@
 """Text injection into active applications on Linux."""
 
 import logging
+import os
 import subprocess
 import time
 
 logger = logging.getLogger(__name__)
 
+# Time to wait after paste before restoring clipboard (seconds).
+# Longer values are safer for slow apps (SSH, remote desktop).
+CLIPBOARD_RESTORE_DELAY = 0.5
+
+
+def _detect_display_server() -> str:
+    """Auto-detect X11 vs Wayland."""
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return "wayland"
+    if os.environ.get("DISPLAY"):
+        return "x11"
+    return "x11"  # fallback
+
 
 class TextInjector:
     """Injects text into the currently active application."""
 
-    def __init__(self, method: str = "xdotool", delay_ms: int = 50):
-        self.method = method
+    def __init__(self, method: str = "auto", delay_ms: int = 50):
+        if method == "auto":
+            self.method = _detect_display_server()
+        elif method in ("wl-copy", "wayland"):
+            self.method = "wayland"
+        else:
+            self.method = "x11"
         self.delay_ms = delay_ms
 
     def inject(self, text: str) -> bool:
@@ -20,8 +39,10 @@ class TextInjector:
         Uses clipboard-based injection for reliability:
         1. Save current clipboard
         2. Copy text to clipboard
-        3. Simulate Ctrl+V paste
-        4. Restore original clipboard
+        3. Wait for clipboard to settle
+        4. Simulate Ctrl+V paste
+        5. Wait for app to process paste
+        6. Restore original clipboard
 
         Args:
             text: The text to inject
@@ -32,7 +53,7 @@ class TextInjector:
         if not text:
             return False
 
-        if self.method == "wl-copy":
+        if self.method == "wayland":
             return self._inject_wayland(text)
         return self._inject_x11(text)
 
@@ -46,7 +67,8 @@ class TextInjector:
                     ["xclip", "-selection", "clipboard", "-o"],
                     capture_output=True, text=True, timeout=2,
                 )
-                old_clipboard = result.stdout
+                if result.returncode == 0:
+                    old_clipboard = result.stdout
             except Exception:
                 pass
 
@@ -57,7 +79,7 @@ class TextInjector:
             )
             proc.communicate(input=text.encode("utf-8"))
 
-            # Small delay for clipboard to settle
+            # Wait for clipboard to settle
             time.sleep(self.delay_ms / 1000.0)
 
             # Simulate Ctrl+V to paste
@@ -66,8 +88,8 @@ class TextInjector:
                 timeout=2,
             )
 
-            # Wait a bit then restore clipboard
-            time.sleep(0.2)
+            # Wait for the target app to process the paste, then restore
+            time.sleep(CLIPBOARD_RESTORE_DELAY)
             if old_clipboard:
                 proc = subprocess.Popen(
                     ["xclip", "-selection", "clipboard"],
@@ -88,19 +110,44 @@ class TextInjector:
     def _inject_wayland(self, text: str) -> bool:
         """Inject text using wl-copy + wtype on Wayland."""
         try:
-            # Use wl-copy for clipboard
+            # Save current clipboard
+            old_clipboard = ""
+            try:
+                result = subprocess.run(
+                    ["wl-paste", "--no-newline"],
+                    capture_output=True, text=True, timeout=2,
+                )
+                if result.returncode == 0:
+                    old_clipboard = result.stdout
+            except Exception:
+                pass
+
+            # Set clipboard to our text
             proc = subprocess.Popen(
                 ["wl-copy"],
                 stdin=subprocess.PIPE,
             )
             proc.communicate(input=text.encode("utf-8"))
 
+            # Wait for clipboard to settle
             time.sleep(self.delay_ms / 1000.0)
 
-            # Simulate Ctrl+V
-            subprocess.run(["wtype", "-M", "ctrl", "-P", "v", "-p", "v", "-m", "ctrl"], timeout=2)
+            # Simulate Ctrl+V using wtype
+            subprocess.run(
+                ["wtype", "-M", "ctrl", "-k", "v"],
+                timeout=2,
+            )
 
-            logger.debug(f"Injected {len(text)} chars via wl-copy")
+            # Wait for paste, then restore clipboard
+            time.sleep(CLIPBOARD_RESTORE_DELAY)
+            if old_clipboard:
+                proc = subprocess.Popen(
+                    ["wl-copy"],
+                    stdin=subprocess.PIPE,
+                )
+                proc.communicate(input=old_clipboard.encode("utf-8"))
+
+            logger.debug(f"Injected {len(text)} chars via wl-copy/wtype")
             return True
 
         except FileNotFoundError:
