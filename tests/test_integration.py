@@ -1488,6 +1488,33 @@ class TestWebServer:
         assert _check_rate_limit("test-ip")
         _rate_buckets.clear()
 
+    def test_assetlinks_endpoint(self):
+        """Digital Asset Links endpoint returns valid JSON for Android TWA."""
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/.well-known/assetlinks.json")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["target"]["package_name"] == "com.whisperflow.twa"
+        assert data[0]["relation"] == ["delegate_permission/common.handle_all_urls"]
+
+    def test_assetlinks_custom_fingerprint(self):
+        """Asset links uses custom fingerprint from env var."""
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        with patch.dict(os.environ, {"WHISPERFLOW_APK_FINGERPRINT": "11:22:33:44"}):
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get("/.well-known/assetlinks.json")
+            data = resp.json()
+            assert data[0]["target"]["sha256_cert_fingerprints"] == ["11:22:33:44"]
+
     def test_import_web_server(self):
         import whisperflow.server.web_server
 

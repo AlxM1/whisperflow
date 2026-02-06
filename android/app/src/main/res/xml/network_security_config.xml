@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Network security config for WhisperFlow TWA.
+    Allows self-signed certificates for LAN connections.
+    Update the domain to match your server's hostname/IP.
+-->
+<network-security-config>
+    <!-- Trust user-installed CAs (for self-signed certs on LAN) -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Allow cleartext (HTTP) for local development only -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">192.168.0.0/16</domain>
+        <domain includeSubdomains="true">10.0.0.0/8</domain>
+        <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
+</network-security-config>

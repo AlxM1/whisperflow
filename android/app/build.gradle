@@ -1,0 +1,62 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.whisperflow.twa'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.whisperflow.twa"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+
+        // ============================================================
+        // CONFIGURE YOUR SERVER URL HERE
+        // Replace with your WhisperFlow server's HTTPS URL
+        // ============================================================
+        manifestPlaceholders = [
+            hostName     : "whisperflow.local",  // Your server hostname or IP
+            defaultUrl   : "https://whisperflow.local",
+            launcherName : "WhisperFlow",
+            assetStatements: '[{ "relation": ["delegate_permission/common.handle_all_urls"], ' +
+                    '"target": { "namespace": "web", "site": "https://whisperflow.local" } }]'
+        ]
+    }
+
+    signingConfigs {
+        // For development/sideloading, use debug keystore.
+        // For production, create a release keystore:
+        //   keytool -genkey -v -keystore whisperflow.keystore -alias whisperflow \
+        //     -keyalg RSA -keysize 2048 -validity 10000
+        release {
+            // Uncomment and configure for release builds:
+            // storeFile file('whisperflow.keystore')
+            // storePassword 'your-password'
+            // keyAlias 'whisperflow'
+            // keyPassword 'your-password'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+        debug {
+            // Debug builds use debug keystore automatically
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.browser:browser:1.7.0'
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+}

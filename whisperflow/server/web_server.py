@@ -701,6 +701,28 @@ def create_app(api_key: str = ""):
         except Exception:
             pass  # WebSocket disconnected
 
+    # -- Digital Asset Links (Android TWA verification) --
+
+    @app.get("/.well-known/assetlinks.json")
+    async def asset_links():
+        """Serve Digital Asset Links for Android TWA verification.
+
+        The fingerprint is populated from WHISPERFLOW_APK_FINGERPRINT env var
+        or returns a placeholder that must be configured before TWA verification works.
+        """
+        fingerprint = os.environ.get(
+            "WHISPERFLOW_APK_FINGERPRINT",
+            "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
+        )
+        return JSONResponse([{
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "com.whisperflow.twa",
+                "sha256_cert_fingerprints": [fingerprint],
+            },
+        }])
+
     # -- PWA Static Files --
 
     @app.get("/")

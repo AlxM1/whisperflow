@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash screen: gradient background with "W" logo -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#0f0f1a" />
+        </shape>
+    </item>
+    <item
+        android:gravity="center"
+        android:width="120dp"
+        android:height="120dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="24dp" />
+            <gradient
+                android:startColor="#e94560"
+                android:endColor="#c23152"
+                android:angle="135" />
+        </shape>
+    </item>
+</layer-list>
