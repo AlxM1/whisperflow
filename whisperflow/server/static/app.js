@@ -758,7 +758,7 @@
     try {
       const resp = await apiFetch("/api/stats");
       if (!resp.ok) throw new Error("Failed to load stats");
-      const s = resp.ok ? await resp.json() : {};
+      const s = await resp.json();
 
       const mins = Math.round(s.total_duration_seconds / 60);
       const recentMins = Math.round((s.last_7_days?.duration_seconds || 0) / 60);
