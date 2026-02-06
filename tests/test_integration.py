@@ -820,3 +820,272 @@ class TestPipelineToneIndependent:
             # With NoopProvider, tone_matcher.apply_tone returns text unchanged
             assert result.processed_text == "hello there"
             assert result.mode == "dictation"
+
+
+# ============================================================================
+# Web Server (PWA Mobile App)
+# ============================================================================
+
+class TestWebServer:
+    """Tests for the WhisperFlow web server (mobile PWA backend)."""
+
+    def test_create_app(self):
+        from whisperflow.server.web_server import create_app
+        app = create_app()
+        assert app.title == "WhisperFlow Web"
+
+    def test_health_endpoint_no_auth(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["auth_required"] is False
+
+    def test_health_endpoint_with_auth(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(api_key="my-secret")
+        client = TestClient(app)
+        # Without auth
+        resp = client.get("/api/health")
+        assert resp.status_code == 200  # health is public
+        assert resp.json()["auth_required"] is True
+
+    def test_dictate_requires_auth(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(api_key="my-secret")
+        client = TestClient(app)
+        resp = client.post("/api/dictate", files={"audio": ("test.wav", b"fake", "audio/wav")},
+                           data={"language": ""})
+        assert resp.status_code == 401
+
+    def test_dictate_wrong_auth(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(api_key="my-secret")
+        client = TestClient(app)
+        resp = client.post("/api/dictate",
+                           files={"audio": ("test.wav", b"fake", "audio/wav")},
+                           data={"language": ""},
+                           headers={"Authorization": "Bearer wrong-key"})
+        assert resp.status_code == 403
+
+    def test_dictate_correct_auth_processes_audio(self):
+        """With correct auth, dictate processes audio through mocked pipeline."""
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+        from whisperflow.transcription.base import TranscriptionResult
+
+        app = create_app(api_key="test-key")
+        client = TestClient(app)
+        wav_bytes = _make_wav_bytes(duration_s=0.5)
+
+        # Mock the transcription result
+        mock_result = TranscriptionResult(
+            text="hello world", language="en", confidence=0.95, duration=0.5,
+        )
+        mock_pipeline_result = MagicMock()
+        mock_pipeline_result.processed_text = "Hello world."
+        mock_pipeline_result.mode = "dictation"
+
+        with patch("whisperflow.server.web_server._convert_to_wav", return_value=wav_bytes):
+            # Patch _init_components to set up mocked state
+            def _mock_init(state):
+                def init():
+                    if state["config"] is not None:
+                        return
+                    state["config"] = {
+                        "history": {"enabled": False},
+                        "dictionary": {"auto_learn": False},
+                    }
+                    state["transcriber"] = MagicMock()
+                    state["transcriber"].transcribe.return_value = mock_result
+                    state["dictionary"] = MagicMock()
+                    state["dictionary"].get_whisper_prompt.return_value = ""
+                    state["pipeline"] = MagicMock()
+                    state["pipeline"].process_dictation.return_value = mock_pipeline_result
+                return init
+
+            # Access the _state dict through the closure
+            # We need to find and replace _init_components
+            # Instead, patch at the module level and control the state dict
+            import whisperflow.server.web_server as ws_mod
+
+            # The _state dict is created inside create_app, so we need
+            # a different approach: just set _state values before the call
+            # Simplest: re-create app and intercept
+            app2 = create_app(api_key="test-key")
+            client2 = TestClient(app2)
+
+            # Inject mocked components by calling dictate and mocking load_config
+            with patch("whisperflow.config.load_config") as mock_lc, \
+                 patch("whisperflow.llm.factory.create_llm_provider") as mock_llm, \
+                 patch("whisperflow.features.dictionary.PersonalDictionary") as mock_dict_cls, \
+                 patch("whisperflow.features.snippets.SnippetManager") as mock_snip, \
+                 patch("whisperflow.features.style_learning.StyleLearner") as mock_style, \
+                 patch("whisperflow.features.history.TranscriptionHistory") as mock_hist, \
+                 patch("whisperflow.processing.pipeline.ProcessingPipeline") as mock_pipe_cls, \
+                 patch("whisperflow.transcription.local_whisper.LocalWhisperBackend") as mock_whisper:
+
+                mock_lc.return_value = {
+                    "transcription": {"backend": "local", "model_size": "tiny",
+                                      "device": "cpu", "compute_type": "float32"},
+                    "llm": {"provider": "none"},
+                    "dictionary": {"path": "/tmp/d.json", "auto_learn": False},
+                    "snippets": {"path": "/tmp/s.json"},
+                    "style": {"path": "/tmp/st.json", "max_examples": 10},
+                    "history": {"path": "/tmp/h.db", "max_entries": 100, "enabled": False},
+                }
+                mock_whisper_inst = MagicMock()
+                mock_whisper_inst.transcribe.return_value = mock_result
+                mock_whisper.return_value = mock_whisper_inst
+
+                mock_dict_inst = MagicMock()
+                mock_dict_inst.get_whisper_prompt.return_value = ""
+                mock_dict_cls.return_value = mock_dict_inst
+
+                mock_pipe_inst = MagicMock()
+                mock_pipe_inst.process_dictation.return_value = mock_pipeline_result
+                mock_pipe_cls.return_value = mock_pipe_inst
+
+                resp = client2.post(
+                    "/api/dictate",
+                    files={"audio": ("test.wav", wav_bytes, "audio/wav")},
+                    data={"language": ""},
+                    headers={"Authorization": "Bearer test-key"},
+                )
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["text"] == "Hello world."
+                assert data["raw_text"] == "hello world"
+                assert data["mode"] == "dictation"
+
+    def test_convert_to_wav_passthrough(self):
+        """WAV input should pass through without conversion."""
+        from whisperflow.server.web_server import _convert_to_wav
+        wav_bytes = _make_wav_bytes(duration_s=0.1)
+        result = _convert_to_wav(wav_bytes)
+        assert result == wav_bytes
+
+    def test_convert_to_wav_detects_wav_header(self):
+        """Should detect RIFF/WAVE header and skip conversion."""
+        from whisperflow.server.web_server import _convert_to_wav
+        wav_bytes = _make_wav_bytes(duration_s=0.1)
+        assert wav_bytes[:4] == b"RIFF"
+        assert wav_bytes[8:12] == b"WAVE"
+        result = _convert_to_wav(wav_bytes)
+        assert result[:4] == b"RIFF"
+
+    def test_convert_to_wav_non_wav_needs_ffmpeg(self):
+        """Non-WAV input should use ffmpeg for conversion."""
+        from whisperflow.server.web_server import _convert_to_wav
+        fake_webm = b"\x1a\x45\xdf\xa3" + b"\x00" * 100  # WebM magic bytes
+
+        with patch("whisperflow.server.web_server.shutil.which", return_value=None):
+            with pytest.raises(RuntimeError, match="ffmpeg"):
+                _convert_to_wav(fake_webm)
+
+    def test_convert_to_wav_ffmpeg_conversion(self):
+        """Test ffmpeg-based conversion with mocked subprocess."""
+        from whisperflow.server.web_server import _convert_to_wav
+        fake_webm = b"\x1a\x45\xdf\xa3" + b"\x00" * 100
+        wav_output = _make_wav_bytes(duration_s=0.1)
+
+        with patch("whisperflow.server.web_server.shutil.which", return_value="/usr/bin/ffmpeg"):
+            with patch("whisperflow.server.web_server.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0)
+                # Mock the file read after conversion
+                with patch("builtins.open", side_effect=[
+                    # First open: write temp in file (handled by NamedTemporaryFile)
+                    # We need to mock the final read
+                    MagicMock(),
+                ]):
+                    with patch("whisperflow.server.web_server.tempfile.NamedTemporaryFile") as mock_tmp:
+                        mock_tmp_instance = MagicMock()
+                        mock_tmp_instance.__enter__ = MagicMock(return_value=mock_tmp_instance)
+                        mock_tmp_instance.__exit__ = MagicMock(return_value=False)
+                        mock_tmp_instance.name = "/tmp/test_input.webm"
+                        mock_tmp.return_value = mock_tmp_instance
+
+                        # Mock reading the output file
+                        mock_open = MagicMock()
+                        mock_file = MagicMock()
+                        mock_file.read.return_value = wav_output
+                        mock_file.__enter__ = MagicMock(return_value=mock_file)
+                        mock_file.__exit__ = MagicMock(return_value=False)
+
+                        with patch("builtins.open", return_value=mock_file):
+                            with patch("os.unlink"):
+                                result = _convert_to_wav(fake_webm)
+                                assert result == wav_output
+                                # Verify ffmpeg was called with right args
+                                mock_run.assert_called_once()
+                                call_args = mock_run.call_args[0][0]
+                                assert call_args[0] == "ffmpeg"
+                                assert "-ar" in call_args
+                                assert "16000" in call_args
+
+    def test_static_files_exist(self):
+        """Verify all required PWA static files exist."""
+        from whisperflow.server.web_server import STATIC_DIR
+        assert (STATIC_DIR / "index.html").exists()
+        assert (STATIC_DIR / "style.css").exists()
+        assert (STATIC_DIR / "app.js").exists()
+        assert (STATIC_DIR / "manifest.json").exists()
+        assert (STATIC_DIR / "sw.js").exists()
+
+    def test_index_endpoint(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "WhisperFlow" in resp.text
+
+    def test_manifest_endpoint(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/manifest.json")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "WhisperFlow"
+
+    def test_service_worker_endpoint(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/sw.js")
+        assert resp.status_code == 200
+        assert "caches" in resp.text or "cache" in resp.text
+
+    def test_import_web_server(self):
+        import whisperflow.server.web_server
+
+
+def _make_wav_bytes(duration_s: float = 0.5, sample_rate: int = 16000) -> bytes:
+    """Create a valid WAV file with silence for testing."""
+    num_samples = int(duration_s * sample_rate)
+    samples = np.zeros(num_samples, dtype=np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(samples.tobytes())
+    return buf.getvalue()

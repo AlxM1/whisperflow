@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="WhisperFlow">
+  <title>WhisperFlow</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Auth Screen -->
+    <div id="auth-screen" class="screen hidden">
+      <div class="auth-card">
+        <div class="logo">W</div>
+        <h1>WhisperFlow</h1>
+        <p>Enter your API key to connect</p>
+        <input type="password" id="api-key-input" placeholder="API Key" autocomplete="off">
+        <button id="auth-submit" class="btn btn-primary">Connect</button>
+        <p id="auth-error" class="error hidden"></p>
+      </div>
+    </div>
+
+    <!-- Main Screen -->
+    <div id="main-screen" class="screen hidden">
+      <!-- Header -->
+      <header>
+        <h1>WhisperFlow</h1>
+        <button id="settings-btn" class="icon-btn" aria-label="Settings">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+          </svg>
+        </button>
+      </header>
+
+      <!-- Mode Tabs -->
+      <div class="tabs">
+        <button class="tab active" data-mode="dictation">Dictation</button>
+        <button class="tab" data-mode="command">Command</button>
+        <button class="tab" data-mode="history">History</button>
+      </div>
+
+      <!-- Dictation Mode -->
+      <div id="dictation-panel" class="panel active">
+        <div id="result-area">
+          <div id="result-placeholder" class="placeholder">
+            Hold the button and speak.<br>Release to process.
+          </div>
+          <div id="result-text" class="result-text hidden"></div>
+          <div id="raw-text" class="raw-text hidden"></div>
+        </div>
+
+        <div id="status-bar" class="status-bar">
+          <span id="status-text">Ready</span>
+          <span id="status-info"></span>
+        </div>
+
+        <div class="record-area">
+          <div id="audio-ring" class="audio-ring">
+            <button id="record-btn" class="record-btn" aria-label="Hold to dictate">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="action-bar">
+          <button id="copy-btn" class="btn btn-secondary hidden">Copy Text</button>
+          <button id="share-btn" class="btn btn-secondary hidden">Share</button>
+        </div>
+      </div>
+
+      <!-- Command Mode -->
+      <div id="command-panel" class="panel hidden">
+        <div class="command-input-area">
+          <label for="selected-text">Text to edit (paste here):</label>
+          <textarea id="selected-text" placeholder="Paste the text you want to edit with voice commands..." rows="4"></textarea>
+        </div>
+
+        <div id="command-result-area">
+          <div id="command-placeholder" class="placeholder">
+            Paste text above, then hold the button and say a command like "make this more formal" or "translate to Spanish".
+          </div>
+          <div id="command-result" class="result-text hidden"></div>
+        </div>
+
+        <div id="command-status" class="status-bar">
+          <span id="command-status-text">Ready</span>
+        </div>
+
+        <div class="record-area">
+          <div class="audio-ring">
+            <button id="command-record-btn" class="record-btn command-btn" aria-label="Hold for command">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="action-bar">
+          <button id="command-copy-btn" class="btn btn-secondary hidden">Copy Result</button>
+        </div>
+      </div>
+
+      <!-- History Panel -->
+      <div id="history-panel" class="panel hidden">
+        <div id="history-list" class="history-list">
+          <div class="placeholder">Loading history...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Settings</h2>
+          <button id="settings-close" class="icon-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="setting-group">
+            <label>Language</label>
+            <select id="setting-language">
+              <option value="auto">Auto-detect</option>
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="fr">French</option>
+              <option value="de">German</option>
+              <option value="it">Italian</option>
+              <option value="pt">Portuguese</option>
+              <option value="zh">Chinese</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+              <option value="ar">Arabic</option>
+              <option value="ru">Russian</option>
+              <option value="hi">Hindi</option>
+            </select>
+          </div>
+          <div class="setting-group">
+            <label>Server URL</label>
+            <input type="url" id="setting-server" placeholder="https://192.168.1.50:8766">
+          </div>
+          <div class="setting-group">
+            <label>API Key</label>
+            <input type="password" id="setting-apikey" placeholder="Leave empty if not required">
+          </div>
+          <button id="settings-save" class="btn btn-primary">Save</button>
+          <button id="settings-logout" class="btn btn-danger">Disconnect</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

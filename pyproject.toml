@@ -21,11 +21,17 @@ dependencies = [
     "anthropic>=0.18.0",
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
+    "python-multipart>=0.0.6",
 ]
 
 [project.optional-dependencies]
 gpu-server = [
     "faster-whisper>=1.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "python-multipart>=0.0.6",
+]
+web = [
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
     "python-multipart>=0.0.6",
@@ -38,9 +44,13 @@ dev = [
 [project.scripts]
 whisperflow = "whisperflow.main:main"
 whisperflow-server = "whisperflow.server.gpu_server:main"
+whisperflow-web = "whisperflow.server.web_server:main"
 
 [tool.setuptools.packages.find]
 include = ["whisperflow*"]
+
+[tool.setuptools.package-data]
+"whisperflow.server" = ["static/**/*"]
 
 [tool.ruff]
 line-length = 100
