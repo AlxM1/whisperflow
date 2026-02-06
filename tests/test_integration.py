@@ -1074,6 +1074,143 @@ class TestWebServer:
         assert resp.status_code == 200
         assert "caches" in resp.text or "cache" in resp.text
 
+    def test_transcribe_requires_auth(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(api_key="secret")
+        client = TestClient(app)
+        resp = client.post("/api/transcribe",
+                           files={"audio": ("test.wav", b"fake", "audio/wav")},
+                           data={"language": ""})
+        assert resp.status_code == 401
+
+    def test_snippets_crud_no_auth(self):
+        """Snippets CRUD works without auth when no key is set."""
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+
+        # Mock components init
+        with patch("whisperflow.config.load_config") as mock_lc, \
+             patch("whisperflow.llm.factory.create_llm_provider"), \
+             patch("whisperflow.features.dictionary.PersonalDictionary"), \
+             patch("whisperflow.features.snippets.SnippetManager") as mock_snip_cls, \
+             patch("whisperflow.features.style_learning.StyleLearner"), \
+             patch("whisperflow.features.history.TranscriptionHistory"), \
+             patch("whisperflow.processing.pipeline.ProcessingPipeline"), \
+             patch("whisperflow.transcription.local_whisper.LocalWhisperBackend"):
+            mock_lc.return_value = {
+                "transcription": {"backend": "local", "model_size": "tiny",
+                                  "device": "cpu", "compute_type": "float32"},
+                "llm": {"provider": "none"},
+                "dictionary": {"path": "/tmp/d.json", "auto_learn": False},
+                "snippets": {"path": "/tmp/s.json"},
+                "style": {"path": "/tmp/st.json", "max_examples": 10},
+                "history": {"path": "/tmp/h.db", "max_entries": 100, "enabled": False},
+            }
+            mock_snip_inst = MagicMock()
+            mock_snip_inst.get_snippets.return_value = {"my email": {"content": "user@test.com"}}
+            mock_snip_cls.return_value = mock_snip_inst
+
+            resp = client.get("/api/snippets")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "my email" in data["snippets"]
+
+    def test_dictionary_crud_no_auth(self):
+        """Dictionary CRUD works without auth when no key is set."""
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+
+        with patch("whisperflow.config.load_config") as mock_lc, \
+             patch("whisperflow.llm.factory.create_llm_provider"), \
+             patch("whisperflow.features.dictionary.PersonalDictionary") as mock_dict_cls, \
+             patch("whisperflow.features.snippets.SnippetManager"), \
+             patch("whisperflow.features.style_learning.StyleLearner"), \
+             patch("whisperflow.features.history.TranscriptionHistory"), \
+             patch("whisperflow.processing.pipeline.ProcessingPipeline"), \
+             patch("whisperflow.transcription.local_whisper.LocalWhisperBackend"):
+            mock_lc.return_value = {
+                "transcription": {"backend": "local", "model_size": "tiny",
+                                  "device": "cpu", "compute_type": "float32"},
+                "llm": {"provider": "none"},
+                "dictionary": {"path": "/tmp/d.json", "auto_learn": False},
+                "snippets": {"path": "/tmp/s.json"},
+                "style": {"path": "/tmp/st.json", "max_examples": 10},
+                "history": {"path": "/tmp/h.db", "max_entries": 100, "enabled": False},
+            }
+            mock_dict_inst = MagicMock()
+            mock_dict_inst.get_words.return_value = {"WhisperFlow": "product"}
+            mock_dict_cls.return_value = mock_dict_inst
+
+            resp = client.get("/api/dictionary")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "WhisperFlow" in data["words"]
+
+    def test_history_search_endpoint(self):
+        """History search endpoint returns filtered results."""
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+
+        with patch("whisperflow.config.load_config") as mock_lc, \
+             patch("whisperflow.llm.factory.create_llm_provider"), \
+             patch("whisperflow.features.dictionary.PersonalDictionary"), \
+             patch("whisperflow.features.snippets.SnippetManager"), \
+             patch("whisperflow.features.style_learning.StyleLearner"), \
+             patch("whisperflow.features.history.TranscriptionHistory") as mock_hist_cls, \
+             patch("whisperflow.processing.pipeline.ProcessingPipeline"), \
+             patch("whisperflow.transcription.local_whisper.LocalWhisperBackend"):
+            mock_lc.return_value = {
+                "transcription": {"backend": "local", "model_size": "tiny",
+                                  "device": "cpu", "compute_type": "float32"},
+                "llm": {"provider": "none"},
+                "dictionary": {"path": "/tmp/d.json", "auto_learn": False},
+                "snippets": {"path": "/tmp/s.json"},
+                "style": {"path": "/tmp/st.json", "max_examples": 10},
+                "history": {"path": "/tmp/h.db", "max_entries": 100, "enabled": False},
+            }
+            mock_hist_inst = MagicMock()
+            mock_hist_inst.search.return_value = [{"raw_text": "hello", "processed_text": "Hello."}]
+            mock_hist_cls.return_value = mock_hist_inst
+
+            resp = client.get("/api/history/search?q=hello")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data["entries"]) == 1
+
+    def test_history_search_empty_query(self):
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/api/history/search?q=")
+        assert resp.status_code == 200
+        assert resp.json()["entries"] == []
+
+    def test_new_tabs_in_index(self):
+        """Verify new tabs appear in the HTML."""
+        from whisperflow.server.web_server import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/")
+        assert "Transcribe" in resp.text
+        assert "Snippets" in resp.text
+        assert "Dictionary" in resp.text
+        assert "theme-toggle" in resp.text
+
     def test_import_web_server(self):
         import whisperflow.server.web_server
 

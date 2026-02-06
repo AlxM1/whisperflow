@@ -306,17 +306,117 @@ def create_app(api_key: str = ""):
         entries = _state["history"].get_recent(limit)
         return {"entries": entries}
 
+    @app.post("/api/transcribe")
+    async def transcribe(
+        audio: UploadFile = File(...),
+        language: str = Form(default=""),
+        authorization: str | None = Header(default=None),
+    ):
+        """Raw speech-to-text: no LLM, no auto-edit, no pipeline. Just STT."""
+        _check_auth(authorization)
+        _init_components()
+
+        audio_bytes = await audio.read()
+        if len(audio_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Audio too large")
+
+        try:
+            wav_bytes = _convert_to_wav(audio_bytes, audio.content_type or "")
+        except RuntimeError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        initial_prompt = _state["dictionary"].get_whisper_prompt()
+        lang = language if language and language != "auto" else None
+
+        start = time.time()
+        result = _state["transcriber"].transcribe(
+            wav_bytes, language=lang, initial_prompt=initial_prompt or None,
+        )
+        elapsed = time.time() - start
+
+        if result.is_empty:
+            return {"text": "", "language": "", "duration": 0, "processing_time": 0}
+
+        # Save to history
+        config = _state["config"]
+        if config["history"]["enabled"]:
+            _state["history"].add(
+                raw_text=result.text,
+                processed_text=result.text,
+                app_context="mobile-transcribe",
+                mode="transcribe",
+                language=result.language,
+                duration=result.duration,
+            )
+
+        return {
+            "text": result.text,
+            "language": result.language,
+            "confidence": result.confidence,
+            "duration": result.duration,
+            "processing_time": round(elapsed, 2),
+        }
+
     @app.get("/api/snippets")
     async def get_snippets(authorization: str | None = Header(default=None)):
         _check_auth(authorization)
         _init_components()
         return {"snippets": _state["snippets"].get_snippets()}
 
+    @app.post("/api/snippets")
+    async def add_snippet(
+        trigger: str = Form(...),
+        content: str = Form(...),
+        description: str = Form(default=""),
+        authorization: str | None = Header(default=None),
+    ):
+        _check_auth(authorization)
+        _init_components()
+        _state["snippets"].add_snippet(trigger, content, description)
+        return {"ok": True}
+
+    @app.delete("/api/snippets/{trigger}")
+    async def delete_snippet(trigger: str, authorization: str | None = Header(default=None)):
+        _check_auth(authorization)
+        _init_components()
+        _state["snippets"].remove_snippet(trigger)
+        return {"ok": True}
+
     @app.get("/api/dictionary")
     async def get_dictionary(authorization: str | None = Header(default=None)):
         _check_auth(authorization)
         _init_components()
         return {"words": _state["dictionary"].get_words()}
+
+    @app.post("/api/dictionary")
+    async def add_word(
+        word: str = Form(...),
+        authorization: str | None = Header(default=None),
+    ):
+        _check_auth(authorization)
+        _init_components()
+        _state["dictionary"].add_word(word)
+        return {"ok": True}
+
+    @app.delete("/api/dictionary/{word}")
+    async def remove_word(word: str, authorization: str | None = Header(default=None)):
+        _check_auth(authorization)
+        _init_components()
+        _state["dictionary"].remove_word(word)
+        return {"ok": True}
+
+    @app.get("/api/history/search")
+    async def search_history(
+        q: str = "",
+        limit: int = 50,
+        authorization: str | None = Header(default=None),
+    ):
+        _check_auth(authorization)
+        _init_components()
+        if not q:
+            return {"entries": []}
+        entries = _state["history"].search(q, limit)
+        return {"entries": entries}
 
     # -- PWA Static Files --
 
