@@ -25,6 +25,7 @@ class CortexClient:
         service_name: str = "whisperflow",
         enabled: bool = True,
         timeout: int = 5,
+        api_key: str | None = None,
     ):
         """Initialize Cortex client.
 
@@ -33,11 +34,13 @@ class CortexClient:
             service_name: Service identifier for task reports
             enabled: Whether Cortex reporting is enabled
             timeout: HTTP request timeout in seconds
+            api_key: API key for Cortex authentication
         """
         self.cortex_url = cortex_url.rstrip("/")
         self.service_name = service_name
         self.enabled = enabled
         self.timeout = timeout
+        self.api_key = api_key
         self._session = None
 
     def _get_session(self) -> requests.Session:
@@ -62,11 +65,16 @@ class CortexClient:
             try:
                 url = f"{self.cortex_url}{endpoint}"
                 session = self._get_session()
+                
+                headers = {"Content-Type": "application/json"}
+                if self.api_key:
+                    headers["X-API-Key"] = self.api_key
+                
                 response = session.post(
                     url,
                     json=payload,
                     timeout=self.timeout,
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                 )
                 if response.status_code not in (200, 201, 204):
                     logger.warning(
@@ -233,11 +241,13 @@ def get_cortex_client() -> CortexClient:
     global _cortex_client
     if _cortex_client is None:
         cortex_url = os.environ.get("CORTEX_URL", "http://cortex:3011")
+        cortex_api_key = os.environ.get("CORTEX_API_KEY")
         enabled = os.environ.get("CORTEX_ENABLED", "true").lower() in ("true", "1", "yes")
         _cortex_client = CortexClient(
             cortex_url=cortex_url,
             service_name="whisperflow",
             enabled=enabled,
+            api_key=cortex_api_key,
         )
         if enabled:
             logger.info(f"Cortex reporting enabled: {cortex_url}")
