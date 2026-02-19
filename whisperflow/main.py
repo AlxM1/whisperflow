@@ -22,6 +22,7 @@ from .features.history import TranscriptionHistory
 from .processing.pipeline import ProcessingPipeline
 from .input.injection import TextInjector
 from .input.hotkey import HotkeyManager
+from .cortex_client import get_cortex_client
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,6 +44,9 @@ class WhisperFlowApp:
         self._command_mode_active = False
         self._running = False
         self._vad = None
+
+        # Initialize Cortex client
+        self.cortex = get_cortex_client()
 
         # Initialize components
         logger.info("Initializing WhisperFlow...")
@@ -292,6 +296,7 @@ class WhisperFlowApp:
 
     def _process_audio(self, audio_data: bytes, is_command: bool):
         """Process captured audio through the full pipeline."""
+        transcription_start = time.time()
         try:
             # Step 1: Transcribe (with timeout)
             initial_prompt = self.dictionary.get_whisper_prompt()
@@ -304,6 +309,13 @@ class WhisperFlowApp:
 
             if result is None:
                 logger.error("Transcription timed out")
+                self.cortex.report_transcription(
+                    mode="command" if is_command else "dictation",
+                    duration=0.0,
+                    backend=self.config["transcription"]["backend"],
+                    success=False,
+                    error="Transcription timeout",
+                )
                 if self._overlay:
                     self._overlay.set_mode("error", "Transcription timeout")
                 return
@@ -352,8 +364,30 @@ class WhisperFlowApp:
             if self.config["dictionary"].get("auto_learn", True):
                 self.dictionary.check_and_learn(result.text, pipeline_result.processed_text)
 
-        except Exception:
+            # Step 6: Report to Cortex
+            transcription_elapsed = time.time() - transcription_start
+            self.cortex.report_transcription(
+                mode=pipeline_result.mode,
+                duration=result.duration,
+                language=result.language,
+                backend=self.config["transcription"]["backend"],
+                success=True,
+                metadata={
+                    "model": self.config["transcription"]["model_size"],
+                    "processing_time": round(transcription_elapsed, 2),
+                    "app_context": pipeline_result.context.detected_app,
+                    "text_length": len(pipeline_result.processed_text),
+                },
+            )
+
+        except Exception as e:
             logger.exception("Error processing audio")
+            self.cortex.report_error(
+                error_type="processing",
+                message=str(e),
+                stack_trace="",
+                context={"is_command": is_command},
+            )
             if self._overlay:
                 self._overlay.set_mode("error", "Processing error")
                 return

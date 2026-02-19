@@ -134,3 +134,10 @@ injection:
   method: auto
   # Delay before injection (ms)
   delay_ms: 50
+
+# Cortex integration (task activity reporting)
+cortex:
+  # Enable Cortex reporting
+  enabled: true
+  # Cortex server URL (or set CORTEX_URL env var)
+  url: "http://cortex:3011"

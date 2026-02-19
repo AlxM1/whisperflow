@@ -25,6 +25,9 @@ import wave
 
 import numpy as np
 
+from ..security import constant_time_compare, validate_language_code, sanitize_llm_input
+from ..cortex_client import get_cortex_client
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -64,7 +67,7 @@ def create_app(api_key: str = "", model_name: str = "large-v3-turbo"):
             raise HTTPException(status_code=401, detail="Missing Authorization header")
         # Accept "Bearer <key>" or just "<key>"
         token = authorization.removeprefix("Bearer ").strip()
-        if not secrets.compare_digest(token, api_key):
+        if not constant_time_compare(token, api_key):
             raise HTTPException(status_code=403, detail="Invalid API key")
 
     @app.get("/health")
@@ -85,15 +88,32 @@ def create_app(api_key: str = "", model_name: str = "large-v3-turbo"):
         authorization: str | None = Header(default=None),
     ):
         _check_auth(authorization)
+        cortex = get_cortex_client()
+        transcription_start = time.time()
 
         audio_bytes = await audio.read()
 
         # Enforce file size limit
         if len(audio_bytes) > MAX_UPLOAD_BYTES:
+            cortex.report_transcription(
+                mode="remote",
+                duration=0.0,
+                backend="gpu_server",
+                success=False,
+                error="Audio file too large",
+            )
             raise HTTPException(
                 status_code=413,
                 detail=f"Audio file too large ({len(audio_bytes)} bytes, max {MAX_UPLOAD_BYTES})",
             )
+
+        # Validate language code
+        if language and not validate_language_code(language):
+            raise HTTPException(status_code=400, detail="Invalid language code")
+
+        # Sanitize initial_prompt to prevent prompt injection
+        if initial_prompt:
+            initial_prompt = sanitize_llm_input(initial_prompt, max_length=500)
 
         # Parse WAV
         try:
@@ -134,6 +154,20 @@ def create_app(api_key: str = "", model_name: str = "large-v3-turbo"):
         logger.info(
             f"Transcribed {duration:.1f}s audio in {elapsed:.1f}s "
             f"(lang={info.language}, speed={duration/elapsed:.1f}x)"
+        )
+
+        # Report to Cortex
+        cortex.report_transcription(
+            mode="remote",
+            duration=duration,
+            language=info.language,
+            backend="gpu_server",
+            success=True,
+            metadata={
+                "model": model_name,
+                "processing_time": elapsed,
+                "confidence": info.language_probability,
+            },
         )
 
         return {

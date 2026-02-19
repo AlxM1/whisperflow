@@ -27,6 +27,16 @@ from pathlib import Path
 
 import numpy as np
 
+from ..security import (
+    constant_time_compare,
+    validate_audio_path,
+    validate_language_code,
+    sanitize_llm_input,
+    validate_file_size,
+    sanitize_filename,
+)
+from ..cortex_client import get_cortex_client
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -252,7 +262,7 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
         if not authorization:
             raise HTTPException(status_code=401, detail="Missing Authorization header")
         token = authorization.removeprefix("Bearer ").strip()
-        if not secrets.compare_digest(token, api_key):
+        if not constant_time_compare(token, api_key):
             raise HTTPException(status_code=403, detail="Invalid API key")
 
     # -- API Endpoints --
@@ -270,10 +280,15 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
         """Process audio through the full dictation pipeline."""
         _check_auth(authorization)
         _init_components()
+        cortex = get_cortex_client()
 
         audio_bytes = await audio.read()
-        if len(audio_bytes) > MAX_UPLOAD_BYTES:
+        if not validate_file_size(len(audio_bytes), max_size_mb=50):
             raise HTTPException(status_code=413, detail="Audio too large")
+
+        # Validate language code
+        if language and not validate_language_code(language):
+            raise HTTPException(status_code=400, detail="Invalid language code")
 
         # Convert browser audio (WebM/Opus) to WAV for Whisper
         try:
@@ -324,6 +339,20 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
             _state["dictionary"].check_and_learn(result.text, pipeline_result.processed_text)
 
         elapsed = time.time() - start
+
+        # Report to Cortex
+        cortex.report_transcription(
+            mode=pipeline_result.mode,
+            duration=result.duration,
+            language=result.language,
+            backend="web_api",
+            success=True,
+            metadata={
+                "processing_time": round(elapsed, 2),
+                "text_length": len(pipeline_result.processed_text),
+            },
+        )
+
         return {
             "text": pipeline_result.processed_text,
             "raw_text": result.text,
@@ -421,8 +450,12 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
         _init_components()
 
         audio_bytes = await audio.read()
-        if len(audio_bytes) > MAX_UPLOAD_BYTES:
+        if not validate_file_size(len(audio_bytes), max_size_mb=50):
             raise HTTPException(status_code=413, detail="Audio too large")
+
+        # Validate language code
+        if language and not validate_language_code(language):
+            raise HTTPException(status_code=400, detail="Invalid language code")
 
         try:
             wav_bytes = _convert_to_wav(audio_bytes, audio.content_type or "")
@@ -447,7 +480,9 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
         if config.get("history", {}).get("save_audio", False):
             audio_dir = Path(config["history"]["path"]).parent / "audio"
             audio_dir.mkdir(parents=True, exist_ok=True)
-            audio_file = str(audio_dir / f"{int(time.time() * 1000)}.wav")
+            # Use sanitized filename to prevent path traversal
+            safe_filename = sanitize_filename(f"{int(time.time() * 1000)}.wav")
+            audio_file = str(audio_dir / safe_filename)
             Path(audio_file).write_bytes(wav_bytes)
 
         # Save to history
@@ -591,6 +626,14 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
         entry = _state["history"].get_entry(entry_id)
         if not entry or not entry.audio_path:
             raise HTTPException(status_code=404, detail="Audio not found")
+
+        # Validate path to prevent directory traversal
+        config = _state["config"]
+        audio_dir = Path(config["history"]["path"]).parent / "audio"
+        if not validate_audio_path(entry.audio_path, str(audio_dir)):
+            logger.warning(f"Path traversal attempt blocked: {entry.audio_path}")
+            raise HTTPException(status_code=403, detail="Access denied")
+
         audio_path = Path(entry.audio_path)
         if not audio_path.exists():
             raise HTTPException(status_code=404, detail="Audio file missing")
@@ -690,6 +733,9 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
 
     # -- WebSocket Streaming STT --
 
+    MAX_WEBSOCKET_CHUNKS = 1000  # Limit to prevent memory exhaustion
+    MAX_WEBSOCKET_SIZE = 100 * 1024 * 1024  # 100MB total
+
     @app.websocket("/ws/stream")
     async def websocket_stream(websocket):
         from starlette.websockets import WebSocket, WebSocketDisconnect
@@ -700,7 +746,7 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
             try:
                 auth_msg = await websocket.receive_json()
                 token = auth_msg.get("api_key", "")
-                if not secrets.compare_digest(token, api_key):
+                if not constant_time_compare(token, api_key):
                     await websocket.send_json({"error": "Invalid API key"})
                     await websocket.close()
                     return
@@ -710,6 +756,7 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
 
         _init_components()
         audio_chunks = []
+        total_bytes = 0
         language = "auto"
 
         try:
@@ -718,7 +765,24 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
 
                 if msg.get("type") == "websocket.receive":
                     if "bytes" in msg and msg["bytes"]:
-                        audio_chunks.append(msg["bytes"])
+                        chunk = msg["bytes"]
+                        chunk_size = len(chunk)
+
+                        # Enforce limits to prevent memory exhaustion
+                        if len(audio_chunks) >= MAX_WEBSOCKET_CHUNKS:
+                            await websocket.send_json({"error": "Too many chunks, send stop"})
+                            audio_chunks.clear()
+                            total_bytes = 0
+                            continue
+
+                        if total_bytes + chunk_size > MAX_WEBSOCKET_SIZE:
+                            await websocket.send_json({"error": "Audio too large, send stop"})
+                            audio_chunks.clear()
+                            total_bytes = 0
+                            continue
+
+                        audio_chunks.append(chunk)
+                        total_bytes += chunk_size
                     elif "text" in msg:
                         data = json.loads(msg["text"])
                         if data.get("action") == "stop":
@@ -730,6 +794,7 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
                                 except RuntimeError:
                                     await websocket.send_json({"error": "Audio conversion failed"})
                                     audio_chunks.clear()
+                                    total_bytes = 0
                                     continue
 
                                 initial_prompt = _state["dictionary"].get_whisper_prompt()
@@ -746,10 +811,16 @@ def create_app(api_key: str = "", allowed_origins: list[str] | None = None):
                                     "final": True,
                                 })
                             audio_chunks.clear()
+                            total_bytes = 0
                         elif data.get("action") == "config":
                             language = data.get("language", "auto")
+                            # Validate language code
+                            if language and not validate_language_code(language):
+                                await websocket.send_json({"error": "Invalid language code"})
+                                language = "auto"
                         elif data.get("action") == "clear":
                             audio_chunks.clear()
+                            total_bytes = 0
         except Exception:
             pass  # WebSocket disconnected
 
