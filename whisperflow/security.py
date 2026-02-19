@@ -10,6 +10,7 @@ import re
 import secrets
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 def sanitize_filename(filename: str, max_length: int = 255) -> str:
@@ -186,26 +187,36 @@ def sanitize_url(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         return ""
 
-    # Block localhost and private IPs (for external URLs only)
-    # This is a basic check; more comprehensive validation may be needed
+    # Parse URL to check hostname properly (prevents allowlist bypass)
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return ""
+    except Exception:
+        return ""
+
+    # Allowlist of internal service hostnames
+    allowed_internal_hosts = {"cortex", "whisperflow", "ollama", "localhost"}
+
+    # Check if this is an allowed internal service
+    if hostname in allowed_internal_hosts:
+        return url
+
+    # For external URLs, block localhost and private IPs
     blocked_patterns = [
-        r"://localhost[:/]",
-        r"://127\.",
-        r"://0\.",
-        r"://192\.168\.",
-        r"://10\.",
-        r"://172\.(1[6-9]|2[0-9]|3[01])\.",
-        r"://\[::1\]",
-        r"://\[::ffff:127\.",
+        r"^localhost$",
+        r"^127\.",
+        r"^0\.",
+        r"^192\.168\.",
+        r"^10\.",
+        r"^172\.(1[6-9]|2[0-9]|3[01])\.",
+        r"^\[::1\]$",
+        r"^\[::ffff:127\.",
     ]
 
     for pattern in blocked_patterns:
-        if re.search(pattern, url, re.IGNORECASE):
-            # Allow if it's explicitly whitelisted internal service
-            if any(
-                svc in url for svc in ["cortex:", "whisperflow:", "ollama:", "localhost:11434"]
-            ):
-                return url
+        if re.match(pattern, hostname, re.IGNORECASE):
             return ""
 
     return url
