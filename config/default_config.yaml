@@ -25,7 +25,7 @@ hotkey:
 # Transcription settings
 transcription:
   # Backend: "local" or "remote"
-  backend: local
+  backend: remote
   # Model size for local: tiny, base, small, medium, large-v3, large-v3-turbo
   model_size: large-v3-turbo
   # Device: "cpu", "cuda", or "auto"
@@ -35,7 +35,7 @@ transcription:
   # Language: auto-detect or ISO code (en, es, fr, de, zh, ja, etc.)
   language: auto
   # Remote GPU server URL (when backend=remote)
-  remote_url: "http://192.168.1.100:8765"
+  remote_url: "http://10.25.10.60:8765"
   # API key for remote GPU server (or set WHISPERFLOW_API_KEY env var)
   remote_api_key: ""
 
